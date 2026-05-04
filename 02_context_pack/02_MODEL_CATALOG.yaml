@@ -1,0 +1,493 @@
+project:
+  name: "Acuaculture Digital Twin Backend"
+  description: "Backend experto para Gemelo Digital acuícola, IoT, modelos matemáticos, bioenergética, ML, visión artificial y decisión operativa."
+  source_reports:
+    - code: "INFORME015"
+      file: "../01_markdown_reports/Informe015_Gemelo_Digital.md"
+      topic: "Gemelo Digital aplicado al sector acuícola"
+    - code: "INFORME016"
+      file: "../01_markdown_reports/Informe016_Oxigeno_Disuelto.md"
+      topic: "Estimación de oxígeno disuelto en acuicultura"
+    - code: "INFORME017"
+      file: "../01_markdown_reports/Informe017_Crecimiento_Alimentacion_ML.md"
+      topic: "Mecanismos de crecimiento, alimentación y ML"
+    - code: "INFORME018"
+      file: "../01_markdown_reports/Informe018_Modelos_Bioenergeticos.md"
+      topic: "Modelos bioenergéticos"
+  backend_stack:
+    - Python 3.11+
+    - FastAPI
+    - Pydantic v2
+    - SQLAlchemy 2
+    - Alembic
+    - PostgreSQL
+    - TimescaleDB
+    - Redis
+    - Celery/RQ/Dramatiq
+    - MLflow
+    - MinIO/S3
+    - NumPy
+    - Pandas
+    - SciPy
+    - scikit-learn
+    - PyTorch/TensorFlow
+    - OpenCV
+
+model_groups:
+  digital_twin:
+    source_report: "INFORME015"
+    description: "Motor central de Gemelo Digital acuícola basado en observación, interpretación, decisión y actuación."
+    models:
+      - code: "DT_DESCRIPTIVE_STATE"
+        name: "Gemelo Digital descriptivo"
+        type: "digital_twin"
+        purpose: "Representar el estado actual del estanque, canal o piscigranja."
+        inputs:
+          - water_quality_current
+          - biomass_current
+          - feeding_current
+          - mortality_current
+          - sensor_status
+        outputs:
+          - current_state
+          - state_summary
+          - data_quality_report
+          - missing_data_report
+        implementation_status: "required"
+
+      - code: "DT_DIAGNOSTIC"
+        name: "Gemelo Digital diagnóstico"
+        type: "digital_twin"
+        purpose: "Detectar anomalías, fallas, condiciones críticas y causas probables."
+        inputs:
+          - sensor_timeseries
+          - model_predictions
+          - thresholds
+          - operational_events
+        outputs:
+          - anomalies
+          - diagnostic_flags
+          - probable_causes
+          - severity_level
+        implementation_status: "required"
+
+      - code: "DT_PREDICTIVE"
+        name: "Gemelo Digital predictivo"
+        type: "digital_twin"
+        purpose: "Proyectar variables futuras de calidad de agua, biomasa, crecimiento y riesgo."
+        inputs:
+          - current_state
+          - historical_timeseries
+          - model_outputs
+          - forecast_horizon
+        outputs:
+          - forecast
+          - risk_projection
+          - confidence
+        implementation_status: "required"
+
+      - code: "DT_PRESCRIPTIVE"
+        name: "Gemelo Digital prescriptivo"
+        type: "digital_twin"
+        purpose: "Recomendar acciones operativas sobre alimentación, oxigenación, caudal, alerta o intervención."
+        inputs:
+          - predictions
+          - risk_assessments
+          - operational_constraints
+          - action_policies
+        outputs:
+          - recommendations
+          - required_actions
+          - explanation
+          - manual_approval_required
+        implementation_status: "required"
+
+  dissolved_oxygen:
+    source_report: "INFORME016"
+    description: "Modelos de oxígeno disuelto, consumo respiratorio, balance de masa y demanda suplementaria."
+    models:
+      - code: "DO_DYNAMIC_0D_ROYER_2021"
+        name: "Modelo dinámico 0D de oxígeno disuelto"
+        type: "mechanistic"
+        source: "Royer et al., 2021"
+        purpose: "Simular la evolución de la concentración de oxígeno disuelto en canal de cultivo."
+        assumptions:
+          - "Agua del canal bien mezclada."
+          - "Sin actividad fotosintética dentro del canal."
+          - "Consumo de oxígeno incluido únicamente por respiración de peces de cultivo."
+          - "Incluye intercambio con la atmósfera."
+          - "Incluye entrada/salida por caudal y suministro controlable de oxígeno."
+        inputs:
+          - do_initial_mg_l
+          - do_influent_mg_l
+          - water_temperature_c
+          - flow_rate_l_h
+          - raceway_volume_l
+          - fish_biomass_kg
+          - oxygen_supply_rate_mg_l_h
+          - reaeration_rate_h_1
+          - simulation_horizon_minutes
+        outputs:
+          - do_forecast_mg_l
+          - oxygen_consumption_rate
+          - oxygen_demand
+          - hypoxia_risk
+        equations_status: "partially_textual_with_figures"
+        implementation_status: "required_first"
+
+      - code: "OXYGEN_CONSUMPTION_SINUSOIDAL"
+        name: "Modelo sinusoidal de consumo diario de oxígeno"
+        type: "mechanistic"
+        source: "Royer et al., 2021"
+        purpose: "Modelar patrón diario de respiración de peces con tasa media, amplitud y fase."
+        inputs:
+          - average_daily_respiration
+          - amplitude
+          - phase
+          - water_temperature_c
+          - time_of_day
+          - fish_biomass_kg
+        outputs:
+          - oxygen_consumption_rate
+          - daily_respiration_pattern
+        implementation_status: "required"
+
+      - code: "DO_MASS_BALANCE_RAS"
+        name: "Balance de masa de oxígeno en RAS"
+        type: "mechanistic"
+        purpose: "Calcular consumo total de oxígeno y oxígeno suplementario requerido en sistema de recirculación."
+        inputs:
+          - fish_respiration_oxygen_consumption
+          - biofilter_oxygen_consumption
+          - nitrification_oxygen_consumption
+          - pipe_flow_oxygen_addition
+          - water_volume
+          - biomass
+        outputs:
+          - total_oxygen_consumption
+          - supplemental_oxygen_required
+          - oxygen_deficit
+        implementation_status: "required"
+
+  ammonia_nitrogen:
+    source_report: "INFORME016"
+    description: "Modelos de amoníaco, TAN, nitrificación y toxicidad."
+    models:
+      - code: "AMMONIA_PREDICTIVE_MODEL"
+        name: "Modelo predictivo de amoníaco"
+        type: "mechanistic_or_hybrid"
+        purpose: "Estimar amonio/amoniaco, carga de nitrificación y riesgo de toxicidad."
+        inputs:
+          - ph
+          - water_temperature_c
+          - tan_mg_l
+          - feed_rate_kg_day
+          - fish_number
+          - biomass_kg
+          - water_volume_l
+          - biofilter_state
+        outputs:
+          - unionized_ammonia_mg_l
+          - ammonia_risk
+          - nitrification_load
+          - recommended_action
+        implementation_status: "required"
+
+  feeding:
+    source_report: "INFORME017"
+    description: "Modelos de alimentación inteligente y consumo de alimento."
+    models:
+      - code: "BPNN_MEA_FEED_INTAKE"
+        name: "Predicción de consumo de alimento con BPNN-MEA"
+        type: "machine_learning"
+        source: "Chen et al., 2020"
+        architecture: "4-10-1"
+        purpose: "Predecir ingesta/consumo de alimento en grupos de peces."
+        preprocessing:
+          - minmax_normalization
+        inputs:
+          - water_temperature_c
+          - dissolved_oxygen_mg_l
+          - average_fish_weight_g
+          - fish_number
+        outputs:
+          - feed_intake_g
+        metrics_reported:
+          - correlation_coefficient
+          - mse
+          - rmse
+          - mae
+          - mape
+        implementation_status: "required"
+
+      - code: "FEEDING_SATIETY_RULES"
+        name: "Reglas de saciedad alimentaria"
+        type: "rule_based"
+        purpose: "Determinar si debe detenerse la alimentación según reacción observada."
+        behavior_categories:
+          - code: "ACTIVE_CONTINUOUS_FEEDING"
+            description: "Peces nadan libremente y comen hasta ingerir el cebo."
+          - code: "MOVE_AND_RETURN"
+            description: "Peces se alejan y regresan después de terminar alimento."
+          - code: "ONLY_FRONT_FEEDING"
+            description: "Peces comen solo alimento que cae frente a ellos."
+          - code: "NO_REACTION"
+            description: "Peces no reaccionan a la caída del cebo; detener alimentación."
+        inputs:
+          - feeding_behavior_category
+          - feed_remaining
+          - fish_reaction
+        outputs:
+          - stop_feeding
+          - feed_waste_risk
+          - recommendation
+        implementation_status: "required"
+
+      - code: "DAILY_RATION_MODEL"
+        name: "Modelo de ración diaria"
+        type: "mechanistic"
+        purpose: "Calcular porcentaje de alimento diario respecto al peso corporal."
+        inputs:
+          - feed_conversion_ratio
+          - daily_growth
+          - fish_length
+          - fish_weight
+        outputs:
+          - feed_percentage_body_weight
+          - feed_amount_g_day
+        implementation_status: "required"
+
+  water_quality_forecasting:
+    source_report: "INFORME017"
+    description: "Modelos de series temporales para predicción de calidad de agua."
+    models:
+      - code: "PEARSON_LSTM_ATTENTION_WQ"
+        name: "Pearson-LSTM-AM"
+        type: "deep_learning"
+        source: "Yu et al., 2025"
+        purpose: "Predecir oxígeno disuelto y calidad de agua usando selección Pearson, LSTM y mecanismo de atención."
+        preprocessing:
+          - linear_interpolation_for_missing_values
+          - outlier_filter_3sigma
+          - minmax_normalization
+          - pearson_feature_selection
+          - train_test_split_80_20
+        inputs:
+          - ph
+          - water_temperature_c
+          - dissolved_oxygen_mg_l
+          - ammonia_nitrogen_mg_l
+          - nitrite_mg_l
+          - orp_mv
+          - turbidity_ntu
+        outputs:
+          - dissolved_oxygen_forecast_mg_l
+          - water_quality_risk
+          - attention_weights
+          - confidence
+        metrics:
+          - RMSE
+          - MAE
+          - MAPE
+          - R2
+        implementation_status: "required"
+
+  bioenergetic:
+    source_report: "INFORME018"
+    description: "Modelos bioenergéticos de crecimiento, ingestión, asimilación, catabolismo y producción fecal."
+    models:
+      - code: "BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010"
+        name: "Modelo bioenergético individual Sparus aurata"
+        type: "bioenergetic"
+        source: "Brigolin et al., 2010"
+        purpose: "Simular crecimiento, ingestión, catabolismo, alimento no consumido y heces."
+        inputs:
+          - wet_weight_g
+          - water_temperature_c
+          - feed_ration_day_1
+          - protein_fraction
+          - lipid_fraction
+          - carbohydrate_fraction
+          - protein_digestibility
+          - lipid_digestibility
+          - carbohydrate_digestibility
+          - energy_content_somatic_tissue_kj_g
+        outputs:
+          - predicted_weight_g
+          - net_anabolism_j_day
+          - fasting_catabolism_j_day
+          - feed_intake_day_1
+          - uneaten_feed_g
+          - feces_production_g_day
+        equations_status: "partially_textual"
+        implementation_status: "required"
+
+      - code: "INGESTION_OPTIMAL_MODEL"
+        name: "Modelo de ingestión óptima"
+        type: "bioenergetic_submodel"
+        purpose: "Estimar tasa de ingestión óptima según peso húmedo y temperatura."
+        inputs:
+          - wet_weight_g
+          - water_temperature_c
+          - i_max_day_1
+          - optimal_temperature_c
+          - lethal_max_temperature_c
+          - shape_coefficient_b
+          - weight_exponent_m
+        outputs:
+          - optimal_ingestion_rate
+          - temperature_limitation
+        implementation_status: "required"
+
+      - code: "ASSIMILATION_DIET_MODEL"
+        name: "Modelo de asimilación de dieta"
+        type: "bioenergetic_submodel"
+        purpose: "Calcular energía asimilada desde proteínas, carbohidratos y lípidos."
+        inputs:
+          - feed_intake
+          - protein_fraction
+          - carbohydrate_fraction
+          - lipid_fraction
+          - protein_assimilation_coefficient
+          - carbohydrate_assimilation_coefficient
+          - lipid_assimilation_coefficient
+          - energy_protein_kj_g
+          - energy_carbohydrate_kj_g
+          - energy_lipid_kj_g
+        outputs:
+          - assimilated_energy
+          - digestion_cost
+        implementation_status: "required"
+
+      - code: "FECES_PRODUCTION_MODEL"
+        name: "Modelo de producción fecal"
+        type: "bioenergetic_submodel"
+        purpose: "Calcular producción fecal individual usando digestibilidad de nutrientes."
+        inputs:
+          - protein_digestibility
+          - lipid_digestibility
+          - carbohydrate_digestibility
+          - feed_intake
+          - diet_composition
+        outputs:
+          - feces_rate
+        implementation_status: "required"
+
+      - code: "FASTING_CATABOLISM_MODEL"
+        name: "Modelo de catabolismo en ayunas"
+        type: "bioenergetic_submodel"
+        purpose: "Calcular pérdidas energéticas en ayuno según peso, temperatura y consumo de oxígeno."
+        inputs:
+          - wet_weight_g
+          - water_temperature_c
+          - oxygen_consumption_parameter
+          - temperature_coefficient_pk
+          - catabolism_at_0c_k0
+          - catabolism_weight_exponent_n
+        outputs:
+          - fasting_catabolism_j_day
+        implementation_status: "required"
+
+  computer_vision:
+    source_report: "INFORME015"
+    description: "Modelos de visión artificial para estimación de peces, comportamiento, salud, redes y algas."
+    models:
+      - code: "FISH_COUNTING_MODEL"
+        name: "Conteo de peces"
+        type: "computer_vision"
+        inputs:
+          - image
+          - video_frame
+          - camera_calibration
+        outputs:
+          - fish_count
+          - confidence
+        implementation_status: "planned"
+
+      - code: "FISH_SIZE_WEIGHT_ESTIMATION"
+        name: "Estimación de tamaño, peso y biomasa"
+        type: "computer_vision"
+        inputs:
+          - image
+          - video_frame
+          - calibration_parameters
+          - species
+        outputs:
+          - fish_length
+          - fish_weight
+          - estimated_biomass
+        implementation_status: "planned"
+
+      - code: "FISH_HEALTH_BEHAVIOR_MODEL"
+        name: "Vitalidad, mortalidad y comportamiento"
+        type: "computer_vision"
+        inputs:
+          - video
+          - behavior_features
+          - water_quality_context
+        outputs:
+          - vitality_score
+          - mortality_alert
+          - abnormal_behavior
+        implementation_status: "planned"
+
+      - code: "NET_HOLE_GREEN_ALGAE_SEGMENTATION"
+        name: "Segmentación de agujeros de red y algas verdes"
+        type: "computer_vision"
+        inputs:
+          - underwater_image
+          - net_image
+        outputs:
+          - net_hole_mask
+          - green_algae_mask
+          - maintenance_alert
+        implementation_status: "planned"
+
+  decision_actuation:
+    source_report: "INFORME015"
+    description: "Motor de decisión y actuación sobre dispositivos."
+    models:
+      - code: "RISK_INDEX_ENGINE"
+        name: "Motor de índice de riesgo"
+        type: "rule_based_or_hybrid"
+        inputs:
+          - do_forecast
+          - ammonia_forecast
+          - temperature_state
+          - biomass_density
+          - feed_waste_risk
+          - sensor_quality
+        outputs:
+          - risk_level
+          - risk_score
+          - risk_explanation
+        implementation_status: "required"
+
+      - code: "RECOMMENDATION_ENGINE"
+        name: "Motor de recomendaciones operativas"
+        type: "decision_engine"
+        inputs:
+          - risk_assessments
+          - model_outputs
+          - action_policies
+          - operational_constraints
+        outputs:
+          - recommended_actions
+          - priority
+          - explanation
+          - approval_required
+        implementation_status: "required"
+
+      - code: "ACTUATION_POLICY_ENGINE"
+        name: "Política de actuación"
+        type: "actuation_policy"
+        inputs:
+          - recommendation
+          - actuator_status
+          - safety_policy
+          - user_approval
+        outputs:
+          - command
+          - command_status
+          - audit_record
+        implementation_status: "required"
