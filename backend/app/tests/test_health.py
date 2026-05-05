@@ -27,3 +27,10 @@ def test_openapi_schema_is_available_when_docs_are_enabled() -> None:
 
     assert response.status_code == 200
     assert response.json()["info"]["title"] == "Aquaculture Digital Twin Backend"
+
+
+def test_vercel_entrypoint_exports_fastapi_app() -> None:
+    from api.main import app
+
+    assert app.title == "Aquaculture Digital Twin Backend"
+    assert app.openapi_url == "/openapi.json"
