@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     echo_sql: bool = False
     log_level: str = "INFO"
     enable_docs: bool = True
+    store_backend: str = "memory"
+    legacy_database_name: str | None = None
 
 
 @lru_cache
