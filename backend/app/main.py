@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.v1.router import api_router
 from backend.app.application import (
@@ -33,8 +34,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.backend_store,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=app_settings.cors_allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     register_exception_handlers(app)
     app.include_router(api_router, prefix=app_settings.api_v1_prefix)
+    if app_settings.enable_unprefixed_api_aliases:
+        app.include_router(api_router, include_in_schema=False)
 
     return app
 

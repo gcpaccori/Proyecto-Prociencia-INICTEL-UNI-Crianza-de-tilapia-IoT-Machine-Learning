@@ -119,6 +119,40 @@ class MySQLBackendStore:
                 ),
                 {"legacy_database": self.legacy_database_name},
             )
+            for actuator_type in ("aerator", "feeder", "pump"):
+                connection.execute(
+                    text(
+                        f"""
+                        INSERT IGNORE INTO actuators (
+                            id, farm_id, pond_id, actuator_code, actuator_type,
+                            manufacturer, status, extra_metadata, created_at, updated_at
+                        )
+                        SELECT
+                            CONCAT('LEGACY-ACTUATOR-', id, '-', :actuator_type),
+                            CONCAT('LEGACY-FARM-', piscigranja_id),
+                            CONCAT('LEGACY-POND-', id),
+                            CONCAT('LEGACY-', UPPER(:actuator_type), '-', id),
+                            :actuator_type,
+                            'virtual_backend',
+                            'active',
+                            JSON_OBJECT(
+                                'source_database', :legacy_database,
+                                'source_table', 'piscinas',
+                                'source_id', id,
+                                'virtual', true,
+                                'dispatch_mode', 'manual_approval_required'
+                            ),
+                            UTC_TIMESTAMP(),
+                            UTC_TIMESTAMP()
+                        FROM {legacy}.piscinas
+                        WHERE deleted_at IS NULL
+                        """
+                    ),
+                    {
+                        "legacy_database": self.legacy_database_name,
+                        "actuator_type": actuator_type,
+                    },
+                )
             for source_column, variable_code, unit in LEGACY_WATER_VARIABLES:
                 connection.execute(
                     text(
@@ -576,6 +610,7 @@ class MySQLBackendStore:
         return payload
 
     def list_actuators(self, pond_id: str | None = None) -> list[ActuatorRead]:
+        self.sync_legacy_data()
         if pond_id is None:
             rows = self._fetch_all("SELECT * FROM actuators ORDER BY actuator_code")
         else:
@@ -586,6 +621,7 @@ class MySQLBackendStore:
         return [self._actuator_from_row(row) for row in rows]
 
     def get_actuator(self, actuator_id: str) -> ActuatorRead | None:
+        self.sync_legacy_data()
         row = self._fetch_one(
             "SELECT * FROM actuators WHERE id = :id",
             {"id": actuator_id},

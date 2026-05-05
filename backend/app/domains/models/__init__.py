@@ -1,3 +1,13 @@
-from backend.app.domains.models.schemas import ModelCatalogItem, ModelRunRequest
+from backend.app.domains.models.schemas import (
+    ModelCatalogItem,
+    ModelInputAudit,
+    ModelInputFieldAudit,
+    ModelRunRequest,
+)
 
-__all__ = ["ModelCatalogItem", "ModelRunRequest"]
+__all__ = [
+    "ModelCatalogItem",
+    "ModelInputAudit",
+    "ModelInputFieldAudit",
+    "ModelRunRequest",
+]

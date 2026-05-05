@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     echo_sql: bool = False
     log_level: str = "INFO"
     enable_docs: bool = True
+    enable_unprefixed_api_aliases: bool = True
+    cors_allow_origins: list[str] = Field(default_factory=lambda: ["*"])
     store_backend: str = "memory"
     legacy_database_name: str | None = None
 

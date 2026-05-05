@@ -141,6 +141,117 @@ def test_model_catalog_and_direct_model_run_are_exposed_for_frontend() -> None:
     assert payload["outputs"]["feed_waste_risk"]["value"] == "high"
 
 
+def test_unprefixed_frontend_aliases_cors_timeseries_and_model_audit() -> None:
+    app = create_app(Settings(environment="test"))
+    client = TestClient(app)
+
+    cors_response = client.options(
+        "/health",
+        headers={
+            "Origin": "https://example.vercel.app",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert cors_response.status_code == 200
+    assert cors_response.headers["access-control-allow-origin"] == "*"
+
+    assert client.get("/health").status_code == 200
+
+    farm_id = client.post(
+        "/farms",
+        json={"code": "FARM-ALIAS", "name": "Frontend Alias Farm"},
+    ).json()["id"]
+    pond_id = client.post(
+        "/ponds",
+        json={"farm_id": farm_id, "code": "POND-ALIAS", "name": "Alias Pond"},
+    ).json()["id"]
+    temp_sensor_id = client.post(
+        "/sensors",
+        json={
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_code": "TEMP-ALIAS",
+            "variable_code": "water_temperature_c",
+        },
+    ).json()["id"]
+    ph_sensor_id = client.post(
+        "/sensors",
+        json={
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_code": "PH-ALIAS",
+            "variable_code": "ph",
+        },
+    ).json()["id"]
+    do_sensor_id = client.post(
+        "/sensors",
+        json={
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_code": "DO-ALIAS",
+            "variable_code": "dissolved_oxygen_mg_l",
+        },
+    ).json()["id"]
+
+    for index, value in enumerate((24.1, 24.4), start=1):
+        client.post(
+            "/measurements/ingest",
+            json={
+                "time": f"2026-05-05T09:0{index}:00Z",
+                "farm_id": farm_id,
+                "pond_id": pond_id,
+                "sensor_id": temp_sensor_id,
+                "variable_code": "water_temperature_c",
+                "raw_value": value,
+                "raw_unit": "degC",
+            },
+        )
+    client.post(
+        "/measurements/ingest",
+        json={
+            "time": "2026-05-05T09:03:00Z",
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_id": ph_sensor_id,
+            "variable_code": "ph",
+            "raw_value": 7.8,
+            "raw_unit": "pH",
+        },
+    )
+    client.post(
+        "/measurements/ingest",
+        json={
+            "time": "2026-05-05T09:04:00Z",
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_id": do_sensor_id,
+            "variable_code": "dissolved_oxygen_mg_l",
+            "raw_value": 5.9,
+            "raw_unit": "mg/L",
+        },
+    )
+
+    timeseries_response = client.get(f"/ponds/{pond_id}/timeseries")
+    assert timeseries_response.status_code == 200
+    timeseries_payload = timeseries_response.json()
+    assert [row["variable_code"] for row in timeseries_payload] == [
+        "water_temperature_c",
+        "water_temperature_c",
+    ]
+    assert [row["clean_value"] for row in timeseries_payload] == [24.1, 24.4]
+
+    audit_response = client.get(
+        "/models/BPNN_MEA_FEED_INTAKE/input-audit",
+        params={"pond_id": pond_id},
+    )
+    assert audit_response.status_code == 200
+    audit_payload = audit_response.json()
+    assert audit_payload["auto_inputs"]["water_temperature_c"]["value"] == 24.4
+    assert audit_payload["auto_inputs"]["dissolved_oxygen_mg_l"]["value"] == 5.9
+    assert "average_fish_weight_g" in audit_payload["missing_inputs"]
+    assert audit_payload["blocked_by"] == ["trained_artifact_pending"]
+
+
 def test_openapi_exposes_frontend_backend_contract_paths() -> None:
     app = create_app(Settings(environment="test", enable_docs=True))
     client = TestClient(app)

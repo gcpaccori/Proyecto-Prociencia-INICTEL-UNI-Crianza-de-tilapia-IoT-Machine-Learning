@@ -10,6 +10,7 @@ from backend.app.domains.measurements import (
 )
 
 router = APIRouter()
+DEFAULT_TIMESERIES_VARIABLE_CODE = "water_temperature_c"
 
 
 @router.post(
@@ -72,12 +73,13 @@ def list_pond_measurements(
 @router.get("/ponds/{pond_id}/timeseries", response_model=list[CleanMeasurementRead])
 def list_pond_timeseries(
     pond_id: str,
-    variable_code: str | None = Query(default=None),
-    limit: int = Query(default=500, ge=1, le=5000),
+    variable_code: str | None = Query(default=DEFAULT_TIMESERIES_VARIABLE_CODE),
+    limit: int = Query(default=288, ge=1, le=5000),
     store: InMemoryBackendStore = Depends(get_store),
 ) -> list[CleanMeasurementRead]:
-    return store.list_clean_measurements(
+    rows = store.list_clean_measurements(
         pond_id=pond_id,
         variable_code=variable_code,
         limit=limit,
     )
+    return sorted(rows, key=lambda row: row.time)
