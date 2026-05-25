@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from backend.app.api.v1.dependencies import get_model_catalog_service, get_store
 from backend.app.application import InMemoryBackendStore, ModelCatalogService
-from backend.app.domains.models import ModelCatalogItem, ModelInputAudit, ModelRunRequest
+from backend.app.domains.models import (
+    ModelCatalogItem,
+    ModelInputAudit,
+    ModelRunRequest,
+    ModelTestPayload,
+)
 from backend.app.models_engine.base import ModelOutput
 
 router = APIRouter()
@@ -39,6 +44,19 @@ def audit_model_inputs(
     return audit
 
 
+@router.get("/models/{model_code}/test-payload", response_model=ModelTestPayload)
+def get_model_test_payload(
+    model_code: str,
+    pond_id: str | None = None,
+    catalog: ModelCatalogService = Depends(get_model_catalog_service),
+    store: InMemoryBackendStore = Depends(get_store),
+) -> ModelTestPayload:
+    payload = catalog.build_test_payload(model_code, store, pond_id=pond_id)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="model not found")
+    return payload
+
+
 @router.post("/models/{model_code}/run", response_model=ModelOutput)
 def run_model(
     model_code: str,
@@ -48,6 +66,27 @@ def run_model(
 ) -> ModelOutput:
     try:
         output = catalog.run_model(model_code, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="model not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return store.save_model_output(output)
+
+
+@router.post("/models/{model_code}/test-run", response_model=ModelOutput)
+def run_model_with_test_payload(
+    model_code: str,
+    pond_id: str | None = None,
+    catalog: ModelCatalogService = Depends(get_model_catalog_service),
+    store: InMemoryBackendStore = Depends(get_store),
+) -> ModelOutput:
+    payload = catalog.build_test_payload(model_code, store, pond_id=pond_id)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="model not found")
+    try:
+        output = catalog.run_model(model_code, payload.request)
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="model not found") from exc
     except ValueError as exc:

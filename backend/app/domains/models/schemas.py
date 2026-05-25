@@ -49,3 +49,15 @@ class ModelRunRequest(BaseModel):
     farm_id: str | None = None
     inputs: dict[str, ModelInputValue]
     parameters: dict[str, object] = Field(default_factory=dict)
+
+
+class ModelTestPayload(BaseModel):
+    model_code: str
+    pond_id: str | None = None
+    readiness_status: str
+    request: ModelRunRequest
+    auto_input_names: list[str] = Field(default_factory=list)
+    generated_input_names: list[str] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
+    test_mode: str
+    notes: list[str] = Field(default_factory=list)

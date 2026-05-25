@@ -109,3 +109,37 @@ def test_classified_model_routes_use_common_runner_contract() -> None:
     assert "YI_ENVIRONMENTAL_GROWTH" in codes
     assert "SODERBERG_LINEAR_GROWTH" in codes
     assert "ZOOTECHNIC_INDEXES" in codes
+
+
+def test_all_catalog_models_can_generate_and_execute_test_payloads() -> None:
+    client = TestClient(create_app(Settings(environment="test")))
+
+    catalog_response = client.get("/api/v1/models")
+    assert catalog_response.status_code == 200
+    catalog = catalog_response.json()
+    assert catalog
+
+    for model in catalog:
+        model_code = model["model_code"]
+        payload_response = client.get(
+            f"/api/v1/models/{model_code}/test-payload",
+            params={"pond_id": "POND-GENERATED-TEST"},
+        )
+        assert payload_response.status_code == 200, model_code
+        payload = payload_response.json()
+        generated_request = payload["request"]
+        assert payload["model_code"] == model_code
+        assert set(model["inputs"]).issubset(generated_request["inputs"])
+        assert payload["generated_input_names"] or payload["auto_input_names"]
+
+        run_response = client.post(
+            f"/api/v1/models/{model_code}/test-run",
+            params={"pond_id": "POND-GENERATED-TEST"},
+        )
+        assert run_response.status_code == 200, f"{model_code}: {run_response.text}"
+        output = run_response.json()
+        assert output["model_code"] == model_code
+        assert output["run_id"].startswith("RUN-")
+
+        if model["readiness_status"] == "requires_external_artifact":
+            assert output["warnings"]

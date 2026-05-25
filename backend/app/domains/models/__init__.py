@@ -3,6 +3,7 @@ from backend.app.domains.models.schemas import (
     ModelInputAudit,
     ModelInputFieldAudit,
     ModelRunRequest,
+    ModelTestPayload,
 )
 
 __all__ = [
@@ -10,4 +11,5 @@ __all__ = [
     "ModelInputAudit",
     "ModelInputFieldAudit",
     "ModelRunRequest",
+    "ModelTestPayload",
 ]

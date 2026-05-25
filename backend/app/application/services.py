@@ -6,6 +6,7 @@ from backend.app.domains.models import (
     ModelInputAudit,
     ModelInputFieldAudit,
     ModelRunRequest,
+    ModelTestPayload,
 )
 from backend.app.models_engine.base import (
     ModelInput,
@@ -112,6 +113,81 @@ class ModelCatalogService:
             missing_inputs=missing_inputs,
             blocked_by=blocked_by,
             frontend_status=frontend_status,
+        )
+
+    def build_test_payload(
+        self,
+        model_code: str,
+        store: InMemoryBackendStore,
+        pond_id: str | None = None,
+    ) -> ModelTestPayload | None:
+        runner = self.runners.get(model_code)
+        if runner is None:
+            return None
+
+        audit = self.audit_inputs(model_code, store, pond_id=pond_id)
+        if audit is None:
+            return None
+
+        auto_input_names: list[str] = []
+        generated_input_names: list[str] = []
+        inputs: dict[str, ModelInputValue] = {}
+        notes: list[str] = []
+
+        force_generated = (
+            model_code == "PEARSON_LSTM_ATTENTION_WQ"
+            and len(audit.auto_inputs) != len(runner.metadata.inputs)
+        )
+        if force_generated:
+            notes.append(
+                "Series temporales generadas completas para mantener ventanas alineadas."
+            )
+
+        for input_name, unit in runner.metadata.inputs.items():
+            auto_input = None if force_generated else audit.auto_inputs.get(input_name)
+            if auto_input is not None:
+                inputs[input_name] = auto_input
+                auto_input_names.append(input_name)
+                continue
+
+            sample_value = self._sample_value_for_input(input_name, unit)
+            if model_code == "PEARSON_LSTM_ATTENTION_WQ" and not isinstance(
+                sample_value,
+                list,
+            ):
+                sample_value = self._sample_timeseries_for_input(input_name)
+
+            inputs[input_name] = ModelInputValue(
+                value=sample_value,
+                unit=unit,
+                quality_flag="generated_test_value",
+            )
+            generated_input_names.append(input_name)
+
+        parameters = self._sample_parameters_for_model(model_code, audit.blocked_by)
+        if generated_input_names:
+            notes.append(
+                "Valores generados solo para prueba de contrato; no representan medicion real."
+            )
+        if audit.blocked_by:
+            notes.append(
+                "Modelo ejecutado en modo dry_run/metadata cuando requiere artefacto externo."
+            )
+
+        return ModelTestPayload(
+            model_code=model_code,
+            pond_id=pond_id,
+            readiness_status=audit.readiness_status,
+            request=ModelRunRequest(
+                pond_id=pond_id,
+                inputs=inputs,
+                parameters=parameters,
+            ),
+            auto_input_names=auto_input_names,
+            generated_input_names=generated_input_names,
+            blocked_by=audit.blocked_by,
+            test_mode="generated_with_auto_inputs" if auto_input_names else "generated",
+            notes=notes,
         )
 
     def run_model(self, model_code: str, request: ModelRunRequest) -> ModelOutput:
@@ -231,6 +307,175 @@ class ModelCatalogService:
             "fish_weight": "fish_weight_g",
         }
         return aliases.get(input_name, input_name)
+
+    @staticmethod
+    def _sample_value_for_input(input_name: str, unit: str) -> object:
+        if unit.endswith("_series"):
+            series_values = {
+                "concentrations_mg_l": [6.4, 6.1, 5.9, 5.7],
+                "saturation_mg_l": [8.6, 8.6, 8.5, 8.5],
+                "biomass_kg": [20.0, 30.0, 40.0, 50.0],
+            }
+            return series_values.get(input_name, [1.0, 1.1, 1.2, 1.3])
+
+        named_values: dict[str, object] = {
+            "do_initial_mg_l": 6.2,
+            "do_influent_mg_l": 7.0,
+            "dissolved_oxygen_mg_l": 6.2,
+            "do_previous_mg_l": 6.5,
+            "water_temperature_c": 27.0,
+            "flow_rate_l_h": 1200.0,
+            "raceway_volume_l": 1280.0,
+            "fish_biomass_kg": 96.0,
+            "biomass_kg": 96.0,
+            "fish_respiration_rate_mg_h_kg": 20.0,
+            "oxygen_supply_rate_mg_l_h": 0.2,
+            "reaeration_rate_h_1": 0.046,
+            "simulation_horizon_minutes": 60.0,
+            "q_over_area_m_h": 0.4,
+            "area_m2": 12.0,
+            "dx_m": 2.0,
+            "dt_h": 1.0,
+            "average_weight_g": 80.0,
+            "average_fish_weight_g": 80.0,
+            "fish_weight_g": 80.0,
+            "wet_weight_g": 80.0,
+            "fish_weight": 80.0,
+            "fish_number": 1000,
+            "fish_count": 1000,
+            "stocking_density_kg_m3": 3.2,
+            "volume_m3": 30.0,
+            "t_min_c": 18.0,
+            "t_opti_c": 28.0,
+            "t_max_c": 34.0,
+            "do_min_mg_l": 3.0,
+            "do_crit_mg_l": 5.0,
+            "k_min": 0.001,
+            "s": 0.05,
+            "kappa": 1.0,
+            "phi": 1.0,
+            "h": 1.0,
+            "feeding_level": 0.8,
+            "m": 0.67,
+            "n": 0.8,
+            "fish_length_mm": 120.0,
+            "fish_length": 12.0,
+            "final_weight_g": 120.0,
+            "initial_weight_g": 80.0,
+            "final_length_cm": 18.0,
+            "days": 30.0,
+            "final_fish_count": 950,
+            "initial_fish_count": 1000,
+            "feed_consumed_g": 30000.0,
+            "feed_ration_day_1": 0.03,
+            "protein_fraction": 0.42,
+            "lipid_fraction": 0.14,
+            "carbohydrate_fraction": 0.18,
+            "protein_digestibility": 0.85,
+            "lipid_digestibility": 0.92,
+            "carbohydrate_digestibility": 0.55,
+            "energy_content_somatic_tissue_kj_g": 5.5,
+            "feed_conversion_ratio": 1.5,
+            "daily_growth": 0.15,
+            "feeding_behavior_category": "ACTIVE_CONTINUOUS_FEEDING",
+            "feed_remaining": False,
+            "fish_reaction": "active feeding response",
+            "ph": [7.6, 7.7, 7.6, 7.8, 7.7, 7.7, 7.6, 7.8],
+            "ammonia_nitrogen_mg_l": [0.12, 0.13, 0.12, 0.14, 0.13, 0.12, 0.13, 0.12],
+            "nitrite_mg_l": [0.04, 0.05, 0.04, 0.05, 0.04, 0.04, 0.05, 0.04],
+            "orp_mv": [220.0, 222.0, 221.0, 223.0, 224.0, 222.0, 221.0, 223.0],
+            "turbidity_ntu": [12.0, 12.4, 12.2, 12.6, 12.5, 12.3, 12.1, 12.4],
+            "image": "demo://images/fish-frame-001.jpg",
+            "video_frame": "demo://video/frame-001",
+            "camera_calibration": {"pixels_per_cm": 10.0, "camera_id": "demo"},
+            "calibration_parameters": {"pixels_per_cm": 10.0, "camera_id": "demo"},
+            "species": "tilapia",
+        }
+        if input_name in named_values:
+            return named_values[input_name]
+
+        unit_values: dict[str, object] = {
+            "mg/L": 6.0,
+            "degC": 27.0,
+            "L/h": 1200.0,
+            "L": 1280.0,
+            "kg": 96.0,
+            "mg/h/kg": 20.0,
+            "mg/L/h": 0.2,
+            "h^-1": 0.046,
+            "min": 60.0,
+            "m/h": 0.4,
+            "m2": 12.0,
+            "m": 2.0,
+            "h": 1.0,
+            "g": 80.0,
+            "count": 1000,
+            "m3": 30.0,
+            "kg/m3": 3.2,
+            "coefficient": 1.0,
+            "fraction": 0.8,
+            "cm/day": 0.15,
+            "cm": 12.0,
+            "mm": 120.0,
+            "day": 30.0,
+            "ratio": 1.5,
+            "day^-1": 0.03,
+            "kJ/g": 5.5,
+            "category": "ACTIVE_CONTINUOUS_FEEDING",
+            "boolean": False,
+            "text": "demo",
+            "pH": [7.6, 7.7, 7.6, 7.8, 7.7, 7.7, 7.6, 7.8],
+            "mV": [220.0, 222.0, 221.0, 223.0, 224.0, 222.0, 221.0, 223.0],
+            "NTU": [12.0, 12.4, 12.2, 12.6, 12.5, 12.3, 12.1, 12.4],
+            "image_ref": "demo://images/fish-frame-001.jpg",
+            "frame_ref": "demo://video/frame-001",
+            "calibration_json": {"pixels_per_cm": 10.0, "camera_id": "demo"},
+        }
+        return unit_values.get(unit, 1.0)
+
+    @staticmethod
+    def _sample_timeseries_for_input(input_name: str) -> list[float]:
+        values = {
+            "water_temperature_c": [26.8, 26.9, 27.0, 27.1, 27.0, 26.9, 27.1, 27.2],
+            "dissolved_oxygen_mg_l": [6.4, 6.3, 6.2, 6.1, 6.2, 6.3, 6.2, 6.1],
+            "ph": [7.6, 7.7, 7.6, 7.8, 7.7, 7.7, 7.6, 7.8],
+            "ammonia_nitrogen_mg_l": [0.12, 0.13, 0.12, 0.14, 0.13, 0.12, 0.13, 0.12],
+            "nitrite_mg_l": [0.04, 0.05, 0.04, 0.05, 0.04, 0.04, 0.05, 0.04],
+            "orp_mv": [220.0, 222.0, 221.0, 223.0, 224.0, 222.0, 221.0, 223.0],
+            "turbidity_ntu": [12.0, 12.4, 12.2, 12.6, 12.5, 12.3, 12.1, 12.4],
+        }
+        return values.get(input_name, [1.0, 1.1, 1.2, 1.3, 1.2, 1.1, 1.0, 1.1])
+
+    @staticmethod
+    def _sample_parameters_for_model(
+        model_code: str,
+        blocked_by: list[str],
+    ) -> dict[str, object]:
+        parameters_by_model: dict[str, dict[str, object]] = {
+            "DO_DYNAMIC_0D_ROYER_2021": {"dt_minutes": 1.0},
+            "RAS_OXYGEN_BALANCE": {
+                "feed_rate_percent_body_weight_day": 2.0,
+                "bod5_mg_o2_kg_day": 2160.0,
+                "pump_cycle_h": 0.5,
+                "pump_frequency_h_1": 1.0,
+                "pump_efficiency": 0.8,
+                "oxygen_transfer_rate_g_h": 120.0,
+            },
+            "SODERBERG_LINEAR_GROWTH": {
+                "species": "nile tilapia",
+                "feed_conversion_ratio": 1.5,
+            },
+            "ZOOTECHNIC_INDEXES": {
+                "biomass_removed_mortality_g": 500.0,
+                "biomass_sampled_g": 0.0,
+                "tank_to_m3_factor": 1.666,
+            },
+            "BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010": {"dt_day": 1.0},
+        }
+        parameters = dict(parameters_by_model.get(model_code, {}))
+        if blocked_by:
+            parameters.update({"dry_run": True, "metadata_only": True})
+        return parameters
 
     @staticmethod
     def _control_for_input(model_code: str, input_name: str, unit: str) -> str:
