@@ -6,9 +6,7 @@ from backend.app.models_engine.base import (
     ModelOutputValue,
     ModelRunContext,
 )
-
-
-FORMULA_PENDING_EXTRACTION = "FORMULA_PENDING_EXTRACTION"
+from backend.app.models_engine.bioenergetic.brigolin_math import brigolin_step
 
 
 class FormulaPendingExtractionError(RuntimeError):
@@ -17,7 +15,7 @@ class FormulaPendingExtractionError(RuntimeError):
 
 class BioenergeticSparusAurataBrigolin2010(BaseModelRunner):
     model_code = "BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010"
-    model_version = "0.1.0"
+    model_version = "1.0.0"
     source_report = "INFORME018"
 
     required_inputs = {
@@ -39,6 +37,7 @@ class BioenergeticSparusAurataBrigolin2010(BaseModelRunner):
         "feed_intake_day_1": "day^-1",
         "uneaten_feed_g": "g",
         "feces_production_g_day": "g/day",
+        "temperature_effect": "factor",
     }
     fraction_inputs = {
         "protein_fraction",
@@ -55,51 +54,19 @@ class BioenergeticSparusAurataBrigolin2010(BaseModelRunner):
         source_report=source_report,
         model_type="bioenergetic",
         name="Modelo bioenergetico individual Sparus aurata",
-        source_reference="Brigolin et al., 2010; Informe018 equations 1-10",
+        source_reference=(
+            "Brigolin et al., 2010; "
+            "formulas_implementacion_gemelo_acuicultura.md seccion 6"
+        ),
         inputs=required_inputs,
         outputs=required_outputs,
         units={**required_inputs, **required_outputs},
         assumptions=[
             "Modelo individual para Sparus aurata.",
-            "El crecimiento depende de peso humedo, temperatura, alimento y dieta.",
-            "La produccion fecal depende de digestibilidad de proteinas, lipidos y carbohidratos.",
-            "Los parametros fisiologicos deben validarse contra la fuente antes de ejecucion productiva.",
+            "La racion se limita por ingestion maxima y temperatura.",
+            "Temperaturas bajo 12 C detienen ingestion.",
         ],
     )
-
-    formula_pending = {
-        "status": FORMULA_PENDING_EXTRACTION,
-        "source_report": source_report,
-        "markdown_file": "01_markdown_reports/Informe018_Modelos_Bioenergeticos.md",
-        "location": "Equations 1-10 and converted Table 1 context",
-        "known_variables": [
-            "W",
-            "A",
-            "C",
-            "epsilon_T",
-            "I",
-            "I_max",
-            "T_w",
-            "T_0",
-            "T_m",
-            "b",
-            "m",
-            "alpha",
-            "C_p",
-            "C_c",
-            "C_l",
-            "beta_p",
-            "beta_c",
-            "beta_l",
-            "k_0",
-            "p_k",
-            "n",
-        ],
-        "action_required": (
-            "Validar ecuacion 4, tabla de parametros y unidades energeticas "
-            "contra el informe original o paper fuente antes de habilitar prediccion."
-        ),
-    }
 
     def validate_inputs(self, model_input: ModelInput) -> None:
         missing = set(self.required_inputs) - set(model_input.inputs)
@@ -143,41 +110,43 @@ class BioenergeticSparusAurataBrigolin2010(BaseModelRunner):
         model_input: ModelInput,
         context: ModelRunContext,
     ) -> ModelOutput:
-        metadata_only = bool(model_input.parameters.get("metadata_only", False))
-        dry_run = bool(model_input.parameters.get("dry_run", False))
-        if not (metadata_only or dry_run):
-            raise FormulaPendingExtractionError(
-                "Cannot execute model: formula pending extraction from source report."
-            )
-
-        warnings = [
-            "FORMULA_PENDING_EXTRACTION: Informe018 equations require manual parameter validation.",
-            "Execution allowed only for dry_run or metadata_only.",
-        ]
-        outputs = {
-            "predicted_weight_g": ModelOutputValue(value=None, unit="g"),
-            "net_anabolism_j_day": ModelOutputValue(value=None, unit="J/day"),
-            "fasting_catabolism_j_day": ModelOutputValue(value=None, unit="J/day"),
-            "feed_intake_day_1": ModelOutputValue(value=None, unit="day^-1"),
-            "uneaten_feed_g": ModelOutputValue(value=None, unit="g"),
-            "feces_production_g_day": ModelOutputValue(value=None, unit="g/day"),
-        }
+        values = brigolin_step(
+            wet_weight_g=float(model_input.inputs["wet_weight_g"].value),
+            water_temperature_c=float(model_input.inputs["water_temperature_c"].value),
+            feed_ration_day_1=float(model_input.inputs["feed_ration_day_1"].value),
+            protein_fraction=float(model_input.inputs["protein_fraction"].value),
+            lipid_fraction=float(model_input.inputs["lipid_fraction"].value),
+            carbohydrate_fraction=float(model_input.inputs["carbohydrate_fraction"].value),
+            protein_digestibility=float(
+                model_input.inputs["protein_digestibility"].value
+            ),
+            lipid_digestibility=float(model_input.inputs["lipid_digestibility"].value),
+            carbohydrate_digestibility=float(
+                model_input.inputs["carbohydrate_digestibility"].value
+            ),
+            energy_content_somatic_tissue_kj_g=float(
+                model_input.inputs["energy_content_somatic_tissue_kj_g"].value
+            ),
+            dt_day=float(model_input.parameters.get("dt_day", 1.0)),
+        )
         return ModelOutput(
             model_code=context.model_code,
             model_version=context.model_version,
             source_report=context.source_report,
-            outputs=outputs,
+            outputs={
+                output_name: ModelOutputValue(
+                    value=values[output_name],
+                    unit=unit,
+                )
+                for output_name, unit in self.required_outputs.items()
+            },
             unit_map=self.required_outputs,
             confidence=None,
-            warnings=warnings,
-            explanation=(
-                "Formula and parameter set pending manual validation from Informe018."
-            ),
+            explanation="Brigolin bioenergetic growth step calculated from diet, temperature and fasting catabolism.",
             explainability={
-                "formula_status": self.formula_pending,
-                "assumptions": self.metadata.assumptions,
-                "inputs": self.metadata.inputs,
-                "outputs": self.metadata.outputs,
+                "formula": "dw/dt = (A - C) / epsilon_T",
+                "delta_weight_g_day": values["delta_weight_g_day"],
+                "somatic_energy_content_kj_g": values["somatic_energy_content_kj_g"],
             },
         )
 

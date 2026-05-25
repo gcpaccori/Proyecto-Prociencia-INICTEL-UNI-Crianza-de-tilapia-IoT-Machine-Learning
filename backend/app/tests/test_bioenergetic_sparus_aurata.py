@@ -5,7 +5,6 @@ import pytest
 from backend.app.models_engine.base import ModelInput, ModelInputValue, ModelRunContext
 from backend.app.models_engine.bioenergetic import (
     BioenergeticSparusAurataBrigolin2010,
-    FormulaPendingExtractionError,
 )
 
 
@@ -39,7 +38,7 @@ def build_model_input(**parameters: object) -> ModelInput:
 def build_context() -> ModelRunContext:
     return ModelRunContext(
         model_code="BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010",
-        model_version="0.1.0",
+        model_version="1.0.0",
         source_report="INFORME018",
         timestamp=datetime(2026, 5, 4, tzinfo=timezone.utc),
         pond_id="POND-001",
@@ -53,20 +52,23 @@ def test_model_metadata_matches_catalog_contract() -> None:
     assert model.metadata.source_report == "INFORME018"
     assert "wet_weight_g" in model.metadata.inputs
     assert "predicted_weight_g" in model.metadata.outputs
-    assert model.formula_pending["status"] == "FORMULA_PENDING_EXTRACTION"
 
 
-def test_model_blocks_execution_until_formula_is_validated() -> None:
+def test_model_executes_brigolin_step() -> None:
     model = BioenergeticSparusAurataBrigolin2010()
 
-    with pytest.raises(FormulaPendingExtractionError, match="formula pending"):
-        model.run(build_model_input(), build_context())
+    result = model.run(build_model_input(), build_context())
+
+    assert result.outputs["predicted_weight_g"].value > 0
+    assert result.outputs["net_anabolism_j_day"].value >= 0
+    assert result.outputs["fasting_catabolism_j_day"].value >= 0
+    assert result.outputs["temperature_effect"].value >= 0
 
 
-def test_model_allows_metadata_only_result_with_required_outputs() -> None:
+def test_model_returns_required_outputs() -> None:
     model = BioenergeticSparusAurataBrigolin2010()
 
-    result = model.run(build_model_input(metadata_only=True), build_context())
+    result = model.run(build_model_input(), build_context())
 
     assert result.model_code == "BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010"
     assert result.outputs["predicted_weight_g"].unit == "g"
@@ -75,7 +77,7 @@ def test_model_allows_metadata_only_result_with_required_outputs() -> None:
     assert result.outputs["feed_intake_day_1"].unit == "day^-1"
     assert result.outputs["uneaten_feed_g"].unit == "g"
     assert result.outputs["feces_production_g_day"].unit == "g/day"
-    assert result.explainability["formula_status"]["source_report"] == "INFORME018"
+    assert result.explainability["formula"] == "dw/dt = (A - C) / epsilon_T"
 
 
 def test_model_validates_units() -> None:

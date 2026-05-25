@@ -227,6 +227,11 @@ def test_default_model_suite_registers_implemented_model_codes() -> None:
         "PEARSON_LSTM_ATTENTION_WQ",
         "FISH_COUNTING_MODEL",
         "FISH_SIZE_WEIGHT_ESTIMATION",
+        "DO_TRANSPORT_1D",
+        "RAS_OXYGEN_BALANCE",
+        "YI_ENVIRONMENTAL_GROWTH",
+        "SODERBERG_LINEAR_GROWTH",
+        "ZOOTECHNIC_INDEXES",
     }
 
     assert set(default_model_codes()) == expected_codes

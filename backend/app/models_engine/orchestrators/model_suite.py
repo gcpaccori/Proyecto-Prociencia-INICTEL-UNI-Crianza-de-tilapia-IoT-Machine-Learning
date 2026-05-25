@@ -1,5 +1,12 @@
 from backend.app.models_engine.base import BaseModelRunner
 from backend.app.models_engine.bioenergetic import BioenergeticSparusAurataBrigolin2010
+from backend.app.models_engine.deterministic import (
+    DissolvedOxygen1DTransport,
+    RASOxygenBalanceModel,
+    SoderbergGrowthModel,
+    YiGrowthModel,
+    ZootechnicIndexesModel,
+)
 from backend.app.models_engine.feeding import DailyRationModel, FeedingSatietyRules
 from backend.app.models_engine.mechanistic import DissolvedOxygen0DRoyer2021
 from backend.app.models_engine.ml import BPNNMEAFeedIntake, PearsonLSTMAttentionWaterQuality
@@ -9,6 +16,11 @@ from backend.app.models_engine.vision import FishCountingModel, FishSizeWeightEs
 def build_default_model_suite() -> list[BaseModelRunner]:
     return [
         DissolvedOxygen0DRoyer2021(),
+        DissolvedOxygen1DTransport(),
+        RASOxygenBalanceModel(),
+        YiGrowthModel(),
+        SoderbergGrowthModel(),
+        ZootechnicIndexesModel(),
         BioenergeticSparusAurataBrigolin2010(),
         FeedingSatietyRules(),
         DailyRationModel(),

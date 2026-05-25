@@ -6,9 +6,7 @@ from backend.app.models_engine.base import (
     ModelOutputValue,
     ModelRunContext,
 )
-
-
-FORMULA_PENDING_EXTRACTION = "FORMULA_PENDING_EXTRACTION"
+from backend.app.models_engine.deterministic import do_saturation, update_do_0d
 
 
 class FormulaPendingExtractionError(RuntimeError):
@@ -17,7 +15,7 @@ class FormulaPendingExtractionError(RuntimeError):
 
 class DissolvedOxygen0DRoyer2021(BaseModelRunner):
     model_code = "DO_DYNAMIC_0D_ROYER_2021"
-    model_version = "0.1.0"
+    model_version = "1.0.0"
     source_report = "INFORME016"
 
     required_inputs = {
@@ -27,6 +25,7 @@ class DissolvedOxygen0DRoyer2021(BaseModelRunner):
         "flow_rate_l_h": "L/h",
         "raceway_volume_l": "L",
         "fish_biomass_kg": "kg",
+        "fish_respiration_rate_mg_h_kg": "mg/h/kg",
         "oxygen_supply_rate_mg_l_h": "mg/L/h",
         "reaeration_rate_h_1": "h^-1",
         "simulation_horizon_minutes": "min",
@@ -35,6 +34,7 @@ class DissolvedOxygen0DRoyer2021(BaseModelRunner):
         "do_forecast_mg_l": "mg/L",
         "oxygen_consumption_rate": "mg/L/h",
         "oxygen_demand": "mg/L",
+        "do_saturation_mg_l": "mg/L",
         "hypoxia_risk": "risk_level",
     }
 
@@ -44,38 +44,20 @@ class DissolvedOxygen0DRoyer2021(BaseModelRunner):
         source_report=source_report,
         model_type="mechanistic",
         name="Modelo dinamico 0D de oxigeno disuelto",
-        source_reference="Royer et al., 2021; Informe016 Tabla 2",
+        source_reference=(
+            "Royer et al., 2021; formulas_implementacion_gemelo_acuicultura.md "
+            "seccion 2.1"
+        ),
         inputs=required_inputs,
         outputs=required_outputs,
         units={**required_inputs, **required_outputs},
         assumptions=[
             "Agua del canal bien mezclada.",
-            "Sin actividad fotosintetica dentro del canal.",
-            "Consumo de oxigeno incluido unicamente por respiracion de peces.",
-            "Incluye intercambio con la atmosfera.",
-            "Incluye entrada/salida por caudal y suministro controlable de oxigeno.",
+            "Euler explicito para la EDO de balance de masa.",
+            "DO_sat se calcula con el polinomio del documento de formulas.",
+            "El consumo de oxigeno se ingresa como mg h^-1 kg^-1.",
         ],
     )
-
-    formula_pending = {
-        "status": FORMULA_PENDING_EXTRACTION,
-        "source_report": source_report,
-        "markdown_file": "01_markdown_reports/Informe016_Oxigeno_Disuelto.md",
-        "location": "Tabla 2 / image2.png",
-        "known_variables": [
-            "Q",
-            "S",
-            "MR",
-            "V",
-            "do_initial_mg_l",
-            "do_influent_mg_l",
-            "reaeration_rate_h_1",
-        ],
-        "action_required": (
-            "Extraer manualmente la ecuacion de balance de masa desde la imagen "
-            "o validar contra el paper fuente antes de habilitar prediccion."
-        ),
-    }
 
     def validate_inputs(self, model_input: ModelInput) -> None:
         missing = set(self.required_inputs) - set(model_input.inputs)
@@ -106,42 +88,74 @@ class DissolvedOxygen0DRoyer2021(BaseModelRunner):
         model_input: ModelInput,
         context: ModelRunContext,
     ) -> ModelOutput:
-        metadata_only = bool(model_input.parameters.get("metadata_only", False))
-        dry_run = bool(model_input.parameters.get("dry_run", False))
-        if not (metadata_only or dry_run):
-            raise FormulaPendingExtractionError(
-                "Cannot execute model: formula pending extraction from source report."
-            )
+        do_value = float(model_input.inputs["do_initial_mg_l"].value)
+        temp_c = float(model_input.inputs["water_temperature_c"].value)
+        do_sat = do_saturation(temp_c)
+        horizon_minutes = float(model_input.inputs["simulation_horizon_minutes"].value)
+        dt_minutes = float(model_input.parameters.get("dt_minutes", 1.0))
+        if dt_minutes <= 0:
+            raise ValueError("dt_minutes must be positive")
 
-        warnings = [
-            "FORMULA_PENDING_EXTRACTION: Informe016 Tabla 2 equation is stored as image2.png.",
-            "Execution allowed only for dry_run or metadata_only.",
-        ]
-        outputs = {
-            "do_forecast_mg_l": ModelOutputValue(value=None, unit="mg/L"),
-            "oxygen_consumption_rate": ModelOutputValue(value=None, unit="mg/L/h"),
-            "oxygen_demand": ModelOutputValue(value=None, unit="mg/L"),
-            "hypoxia_risk": ModelOutputValue(
-                value="not_computed_formula_pending",
-                unit="risk_level",
-            ),
-        }
+        elapsed = 0.0
+        while elapsed < horizon_minutes:
+            step_minutes = min(dt_minutes, horizon_minutes - elapsed)
+            do_value = update_do_0d(
+                x_prev=do_value,
+                x_in=float(model_input.inputs["do_influent_mg_l"].value),
+                q_l_h=float(model_input.inputs["flow_rate_l_h"].value),
+                volume_l=float(model_input.inputs["raceway_volume_l"].value),
+                s=float(model_input.inputs["oxygen_supply_rate_mg_l_h"].value),
+                k_rear=float(model_input.inputs["reaeration_rate_h_1"].value),
+                do_sat=do_sat,
+                biomass_kg=float(model_input.inputs["fish_biomass_kg"].value),
+                respiration_rate=float(
+                    model_input.inputs["fish_respiration_rate_mg_h_kg"].value
+                ),
+                dt_h=step_minutes / 60.0,
+            )
+            elapsed += step_minutes
+
+        volume_l = float(model_input.inputs["raceway_volume_l"].value)
+        consumption_rate = (
+            float(model_input.inputs["fish_biomass_kg"].value)
+            * float(model_input.inputs["fish_respiration_rate_mg_h_kg"].value)
+            / volume_l
+        )
+        oxygen_demand = consumption_rate * (horizon_minutes / 60.0)
+        hypoxia_risk = self._hypoxia_risk(do_value)
         return ModelOutput(
             model_code=context.model_code,
             model_version=context.model_version,
             source_report=context.source_report,
-            outputs=outputs,
+            outputs={
+                "do_forecast_mg_l": ModelOutputValue(value=do_value, unit="mg/L"),
+                "oxygen_consumption_rate": ModelOutputValue(
+                    value=consumption_rate,
+                    unit="mg/L/h",
+                ),
+                "oxygen_demand": ModelOutputValue(value=oxygen_demand, unit="mg/L"),
+                "do_saturation_mg_l": ModelOutputValue(value=do_sat, unit="mg/L"),
+                "hypoxia_risk": ModelOutputValue(value=hypoxia_risk, unit="risk_level"),
+            },
             unit_map=self.required_outputs,
             confidence=None,
-            warnings=warnings,
-            explanation="Formula pending manual extraction from Informe016 Tabla 2.",
+            explanation="0D dissolved oxygen forecast calculated with explicit Euler balance.",
             explainability={
-                "formula_status": self.formula_pending,
-                "assumptions": self.metadata.assumptions,
-                "inputs": self.metadata.inputs,
-                "outputs": self.metadata.outputs,
+                "formula": (
+                    "dx/dt = Q(x_in - x)/V + S + k_rear(DO_sat - x) - M R / V"
+                ),
+                "dt_minutes": dt_minutes,
+                "simulation_steps": int(round(horizon_minutes / dt_minutes)),
             },
         )
+
+    @staticmethod
+    def _hypoxia_risk(do_mg_l: float) -> str:
+        if do_mg_l < 3:
+            return "high"
+        if do_mg_l < 5:
+            return "medium"
+        return "low"
 
     @staticmethod
     def _require_non_negative_number(name: str, value: object) -> None:
