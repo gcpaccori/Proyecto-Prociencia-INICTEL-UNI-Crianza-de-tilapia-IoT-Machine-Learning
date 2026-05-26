@@ -28,6 +28,13 @@ from backend.app.domains.measurements import (
     RawMeasurementCreate,
     RawMeasurementRead,
 )
+from backend.app.domains.ml_lifecycle import (
+    CleaningRunRead,
+    FeatureSetRead,
+    ModelAssetRead,
+    TrainingJobEventRead,
+    TrainingJobRead,
+)
 from backend.app.models_engine.base import ModelOutput
 from backend.app.models_engine.orchestrators.schemas import DigitalTwinSnapshot
 
@@ -726,6 +733,300 @@ class MySQLBackendStore:
             )
         return [ModelOutput.model_validate_json(str(row["payload_json"])) for row in rows]
 
+    def save_clean_measurements(
+        self,
+        rows: list[CleanMeasurementRead],
+        overwrite_ids: bool = False,
+    ) -> list[CleanMeasurementRead]:
+        if not rows:
+            return rows
+        with self.engine.begin() as connection:
+            for row in rows:
+                statement = """
+                    INSERT INTO clean_measurements (
+                        id, raw_measurement_id, time, farm_id, pond_id, sensor_id,
+                        variable_code, clean_value, standard_unit, quality_flag,
+                        validation_status, cleaning_method, created_at
+                    )
+                    VALUES (
+                        :id, :raw_measurement_id, :time, :farm_id, :pond_id,
+                        :sensor_id, :variable_code, :clean_value, :standard_unit,
+                        :quality_flag, :validation_status, :cleaning_method,
+                        :created_at
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        clean_value = IF(:overwrite_ids, VALUES(clean_value), clean_value),
+                        quality_flag = IF(:overwrite_ids, VALUES(quality_flag), quality_flag),
+                        validation_status = IF(:overwrite_ids, VALUES(validation_status), validation_status),
+                        cleaning_method = IF(:overwrite_ids, VALUES(cleaning_method), cleaning_method)
+                """
+                payload = self._dump_model(row)
+                payload["overwrite_ids"] = overwrite_ids
+                connection.execute(text(statement), payload)
+        return rows
+
+    def save_cleaning_run(self, cleaning_run: CleaningRunRead) -> CleaningRunRead:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO cleaning_runs (
+                        run_id, payload_json, status, started_at, finished_at
+                    )
+                    VALUES (
+                        :run_id, :payload_json, :status, :started_at, :finished_at
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        payload_json = VALUES(payload_json),
+                        status = VALUES(status),
+                        finished_at = VALUES(finished_at)
+                    """
+                ),
+                {
+                    "run_id": cleaning_run.run_id,
+                    "payload_json": cleaning_run.model_dump_json(),
+                    "status": cleaning_run.status,
+                    "started_at": cleaning_run.started_at,
+                    "finished_at": cleaning_run.finished_at,
+                },
+            )
+        return cleaning_run
+
+    def get_cleaning_run(self, run_id: str) -> CleaningRunRead | None:
+        row = self._fetch_one(
+            "SELECT payload_json FROM cleaning_runs WHERE run_id = :run_id",
+            {"run_id": run_id},
+        )
+        return CleaningRunRead.model_validate_json(str(row["payload_json"])) if row else None
+
+    def list_cleaning_runs(self) -> list[CleaningRunRead]:
+        rows = self._fetch_all(
+            "SELECT payload_json FROM cleaning_runs ORDER BY started_at DESC"
+        )
+        return [CleaningRunRead.model_validate_json(str(row["payload_json"])) for row in rows]
+
+    def save_feature_set(self, feature_set: FeatureSetRead) -> FeatureSetRead:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO feature_sets (
+                        feature_set_id, pond_id, target_variable, payload_json,
+                        status, created_at
+                    )
+                    VALUES (
+                        :feature_set_id, :pond_id, :target_variable, :payload_json,
+                        :status, :created_at
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        payload_json = VALUES(payload_json),
+                        status = VALUES(status)
+                    """
+                ),
+                {
+                    "feature_set_id": feature_set.feature_set_id,
+                    "pond_id": feature_set.pond_id,
+                    "target_variable": feature_set.target_variable,
+                    "payload_json": feature_set.model_dump_json(),
+                    "status": feature_set.status,
+                    "created_at": feature_set.created_at,
+                },
+            )
+        return feature_set
+
+    def get_feature_set(self, feature_set_id: str) -> FeatureSetRead | None:
+        row = self._fetch_one(
+            "SELECT payload_json FROM feature_sets WHERE feature_set_id = :id",
+            {"id": feature_set_id},
+        )
+        return FeatureSetRead.model_validate_json(str(row["payload_json"])) if row else None
+
+    def list_feature_sets(self) -> list[FeatureSetRead]:
+        rows = self._fetch_all(
+            "SELECT payload_json FROM feature_sets ORDER BY created_at DESC"
+        )
+        return [FeatureSetRead.model_validate_json(str(row["payload_json"])) for row in rows]
+
+    def save_training_job(self, job: TrainingJobRead) -> TrainingJobRead:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO training_jobs (
+                        job_id, model_code, feature_set_id, payload_json,
+                        status, requested_at, finished_at
+                    )
+                    VALUES (
+                        :job_id, :model_code, :feature_set_id, :payload_json,
+                        :status, :requested_at, :finished_at
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        payload_json = VALUES(payload_json),
+                        status = VALUES(status),
+                        finished_at = VALUES(finished_at)
+                    """
+                ),
+                {
+                    "job_id": job.job_id,
+                    "model_code": job.model_code,
+                    "feature_set_id": job.feature_set_id,
+                    "payload_json": job.model_dump_json(),
+                    "status": job.status,
+                    "requested_at": job.requested_at,
+                    "finished_at": job.finished_at,
+                },
+            )
+        return job
+
+    def get_training_job(self, job_id: str) -> TrainingJobRead | None:
+        row = self._fetch_one(
+            "SELECT payload_json FROM training_jobs WHERE job_id = :job_id",
+            {"job_id": job_id},
+        )
+        return TrainingJobRead.model_validate_json(str(row["payload_json"])) if row else None
+
+    def list_training_jobs(self) -> list[TrainingJobRead]:
+        rows = self._fetch_all(
+            "SELECT payload_json FROM training_jobs ORDER BY requested_at DESC"
+        )
+        return [TrainingJobRead.model_validate_json(str(row["payload_json"])) for row in rows]
+
+    def append_training_job_event(
+        self,
+        event: TrainingJobEventRead,
+    ) -> TrainingJobEventRead:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO training_job_events (
+                        event_id, job_id, payload_json, event_type, created_at
+                    )
+                    VALUES (
+                        :event_id, :job_id, :payload_json, :event_type, :created_at
+                    )
+                    """
+                ),
+                {
+                    "event_id": event.event_id,
+                    "job_id": event.job_id,
+                    "payload_json": event.model_dump_json(),
+                    "event_type": event.event_type,
+                    "created_at": event.created_at,
+                },
+            )
+        return event
+
+    def list_training_job_events(self, job_id: str) -> list[TrainingJobEventRead]:
+        rows = self._fetch_all(
+            """
+            SELECT payload_json
+            FROM training_job_events
+            WHERE job_id = :job_id
+            ORDER BY created_at
+            """,
+            {"job_id": job_id},
+        )
+        return [
+            TrainingJobEventRead.model_validate_json(str(row["payload_json"]))
+            for row in rows
+        ]
+
+    def save_model_asset(self, asset: ModelAssetRead) -> ModelAssetRead:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO model_assets (
+                        asset_id, model_code, version, artifact_path,
+                        status, payload_json, created_at, activated_at, deprecated_at
+                    )
+                    VALUES (
+                        :asset_id, :model_code, :version, :artifact_path,
+                        :status, :payload_json, :created_at, :activated_at, :deprecated_at
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        status = VALUES(status),
+                        payload_json = VALUES(payload_json),
+                        activated_at = VALUES(activated_at),
+                        deprecated_at = VALUES(deprecated_at)
+                    """
+                ),
+                {
+                    "asset_id": asset.asset_id,
+                    "model_code": asset.model_code,
+                    "version": asset.version,
+                    "artifact_path": asset.artifact_path,
+                    "status": asset.status,
+                    "payload_json": asset.model_dump_json(),
+                    "created_at": asset.created_at,
+                    "activated_at": asset.activated_at,
+                    "deprecated_at": asset.deprecated_at,
+                },
+            )
+        return asset
+
+    def get_model_asset(self, asset_id: str) -> ModelAssetRead | None:
+        row = self._fetch_one(
+            "SELECT payload_json FROM model_assets WHERE asset_id = :asset_id",
+            {"asset_id": asset_id},
+        )
+        return ModelAssetRead.model_validate_json(str(row["payload_json"])) if row else None
+
+    def list_model_assets(
+        self,
+        model_code: str | None = None,
+        status: str | None = None,
+    ) -> list[ModelAssetRead]:
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if model_code is not None:
+            clauses.append("model_code = :model_code")
+            params["model_code"] = model_code
+        if status is not None:
+            clauses.append("status = :status")
+            params["status"] = status
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._fetch_all(
+            f"SELECT payload_json FROM model_assets {where} ORDER BY created_at DESC",
+            params,
+        )
+        return [ModelAssetRead.model_validate_json(str(row["payload_json"])) for row in rows]
+
+    def active_model_asset(self, model_code: str) -> ModelAssetRead | None:
+        assets = self.list_model_assets(model_code=model_code, status="active")
+        return assets[0] if assets else None
+
+    def activate_model_asset(self, asset_id: str) -> ModelAssetRead:
+        asset = self.get_model_asset(asset_id)
+        if asset is None:
+            raise ValueError("asset_id does not exist")
+        now = self._now()
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    UPDATE model_assets
+                    SET status = 'deprecated',
+                        deprecated_at = :now,
+                        payload_json = JSON_SET(payload_json, '$.status', 'deprecated')
+                    WHERE model_code = :model_code AND status = 'active'
+                    """
+                ),
+                {"now": now, "model_code": asset.model_code},
+            )
+        activated = asset.model_copy(update={"status": "active", "activated_at": now})
+        return self.save_model_asset(activated)
+
+    def deprecate_model_asset(self, asset_id: str) -> ModelAssetRead:
+        asset = self.get_model_asset(asset_id)
+        if asset is None:
+            raise ValueError("asset_id does not exist")
+        deprecated = asset.model_copy(
+            update={"status": "deprecated", "deprecated_at": self._now()}
+        )
+        return self.save_model_asset(deprecated)
+
     def _list_snapshots(self, pond_id: str | None = None) -> list[DigitalTwinSnapshot]:
         if pond_id is None:
             rows = self._fetch_all(
@@ -1029,6 +1330,65 @@ SCHEMA_STATEMENTS = [
         payload_json JSON NOT NULL,
         created_at DATETIME NOT NULL,
         INDEX ix_model_outputs_code_time (model_code, created_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cleaning_runs (
+        run_id VARCHAR(160) PRIMARY KEY,
+        payload_json JSON NOT NULL,
+        status VARCHAR(64) NOT NULL,
+        started_at DATETIME NOT NULL,
+        finished_at DATETIME,
+        INDEX ix_cleaning_runs_status_time (status, started_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS feature_sets (
+        feature_set_id VARCHAR(160) PRIMARY KEY,
+        pond_id VARCHAR(128) NOT NULL,
+        target_variable VARCHAR(128) NOT NULL,
+        payload_json JSON NOT NULL,
+        status VARCHAR(64) NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX ix_feature_sets_pond_time (pond_id, created_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS training_jobs (
+        job_id VARCHAR(160) PRIMARY KEY,
+        model_code VARCHAR(128) NOT NULL,
+        feature_set_id VARCHAR(160) NOT NULL,
+        payload_json JSON NOT NULL,
+        status VARCHAR(64) NOT NULL,
+        requested_at DATETIME NOT NULL,
+        finished_at DATETIME,
+        INDEX ix_training_jobs_model_time (model_code, requested_at),
+        INDEX ix_training_jobs_status_time (status, requested_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS training_job_events (
+        event_id VARCHAR(160) PRIMARY KEY,
+        job_id VARCHAR(160) NOT NULL,
+        payload_json JSON NOT NULL,
+        event_type VARCHAR(64) NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX ix_training_job_events_job_time (job_id, created_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_assets (
+        asset_id VARCHAR(160) PRIMARY KEY,
+        model_code VARCHAR(128) NOT NULL,
+        version VARCHAR(64) NOT NULL,
+        artifact_path TEXT NOT NULL,
+        status VARCHAR(64) NOT NULL,
+        payload_json JSON NOT NULL,
+        created_at DATETIME NOT NULL,
+        activated_at DATETIME,
+        deprecated_at DATETIME,
+        INDEX ix_model_assets_model_status (model_code, status),
+        INDEX ix_model_assets_created_at (created_at)
     )
     """,
     """

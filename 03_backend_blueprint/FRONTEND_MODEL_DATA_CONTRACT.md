@@ -8,7 +8,12 @@ http://37.60.226.53:8000/api/v1
 
 ## Estado real del backend
 
-Los modelos deterministas, mecanisticos, bioenergeticos y reglas ya tienen formula ejecutable y trazabilidad. Los modelos ML y vision tienen contrato real, entradas reales y dry-run, pero para prediccion productiva necesitan artefactos entrenados/versionados.
+Los modelos deterministas, mecanisticos, bioenergeticos y reglas ya tienen formula ejecutable y trazabilidad. El backend ya expone tambien el ciclo MLOps inicial para datos tabulares: diagnostico de datasets, limpieza auditable, construccion de feature sets, training jobs, model assets, activacion de versiones y metricas.
+
+Los modelos ML y vision siguen divididos en dos estados:
+
+- ML tabular/series: entrenables desde backend cuando exista dataset suficiente.
+- Vision/CFD/video: condicionados hasta contar con datasets externos adecuados.
 
 De los 45 componentes identificados en la arquitectura del gemelo digital, 40 tienen viabilidad tecnica alta dentro del backend actual. Esta cifra no significa que todos esten productivos de inmediato; significa que la arquitectura ya puede soportarlos mediante formula, entrenamiento tabular o integracion de artefactos.
 
@@ -37,6 +42,34 @@ POST /models/test-run-all?pond_id={pond_id}
 GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}
 ```
 
+Para ciclo de vida ML no debe inventar estados. Debe consumir:
+
+```text
+GET /datasets/sources
+POST /datasets/sync-legacy
+GET /datasets/coverage?pond_id={pond_id}
+GET /datasets/readiness?pond_id={pond_id}&model_code={model_code}
+POST /data/cleaning-runs
+GET /data/cleaning-runs/{run_id}
+GET /data/cleaning-runs/{run_id}/summary
+GET /data/cleaning-runs/{run_id}/preview
+POST /features/build
+GET /features/{feature_set_id}
+GET /features/{feature_set_id}/preview
+GET /ml/lifecycle/status
+GET /ml/trainable-models
+POST /ml/training-jobs
+GET /ml/training-jobs/{job_id}
+GET /ml/training-jobs/{job_id}/events
+GET /ml/model-assets
+POST /ml/model-assets/{asset_id}/activate
+POST /ml/model-assets/{asset_id}/deprecate
+GET /models/{model_code}/asset
+GET /models/{model_code}/metrics
+POST /ml/model-assets/{asset_id}/predict
+POST /models/{model_code}/predict
+```
+
 `input-audit` dice que entradas salen automaticamente de BD, que entradas faltan por formulario, que unidad exacta debe enviarse y si el modelo esta bloqueado por artefacto pendiente.
 
 `test-payload` genera un payload completo mezclando inputs reales disponibles en BD y valores marcados como `generated_test_value` para los campos faltantes. Sirve para probar formularios, rutas y salidas sin inventar datos dentro del frontend.
@@ -46,6 +79,8 @@ GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}
 `test-run-all` ejecuta todos los modelos registrados con datos reales disponibles y valores generados donde falten. Debe usarse como comprobacion global del backend.
 
 `frontend/dashboard` entrega un paquete agregado para la pantalla principal: backend online, granjas, estanques, tarjetas del mapa integral, resumen de modelos, calidad de agua actual, rutas de accion, evidencia y trazabilidad.
+
+Ahora tambien entrega `ml_lifecycle`, `feature_sets`, `training_jobs`, `model_assets` dentro de evidencia y rutas MLOps dentro de `frontend_contract_routes`.
 
 Importante: `models` no significa los 45 componentes del proyecto. `models` son los 13 runners ejecutables por API. Los 45 componentes completos se consultan en:
 
@@ -239,6 +274,37 @@ POST /models/test-run-all?pond_id={pond_id}
 La UI debe mostrar claramente que esos valores son de prueba cuando `quality_flag` sea `generated_test_value`.
 
 Si un dato real de BD existe pero cae fuera del dominio matematico de una prueba, el backend cambia esa prueba a valores generados validos y lo informa en `notes`. Esto evita que el frontend parezca roto cuando la medicion real no sirve para una simulacion demo.
+
+### 4. Ciclo de vida ML
+
+Esta pantalla es obligatoria para que el sistema no sea solo formularios.
+
+Flujo visual:
+
+```text
+Dataset -> Limpieza -> Feature set -> Entrenamiento -> Artefacto -> Activacion -> Inferencia
+```
+
+Subpantallas:
+
+- Datos: cobertura por estanque y variable.
+- Limpieza: ejecutar `cleaning-run`, ver outliers, interpolados y preview.
+- Features: elegir target, features, ventana temporal, split y Pearson.
+- Entrenamiento: lanzar job, ver estado y eventos.
+- Artefactos: comparar versiones, metricas y activar una version.
+- Inferencia: usar `/models/{model_code}/run` con artefacto activo.
+- Inferencia ML tabular: usar `/models/{model_code}/predict` cuando exista asset activo.
+
+Estados que debe mostrar:
+
+- `dataset_missing`
+- `dataset_ready`
+- `training_available`
+- `training_running`
+- `candidate`
+- `active`
+- `deprecated`
+- `external_data_required`
 
 Tambien existen aliases clasificados:
 
@@ -608,6 +674,11 @@ Tablas propias usadas por el backend para esta UI:
 - `sensors`
 - `raw_measurements`
 - `clean_measurements`
+- `cleaning_runs`
+- `feature_sets`
+- `training_jobs`
+- `training_job_events`
+- `model_assets`
 - `digital_twin_snapshots`
 - `model_outputs`
 - `actuators`

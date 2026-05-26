@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from threading import RLock
 from uuid import uuid4
 
@@ -20,6 +21,13 @@ from backend.app.domains.measurements import (
     RawMeasurementCreate,
     RawMeasurementRead,
 )
+from backend.app.domains.ml_lifecycle import (
+    CleaningRunRead,
+    FeatureSetRead,
+    ModelAssetRead,
+    TrainingJobEventRead,
+    TrainingJobRead,
+)
 from backend.app.models_engine.base import ModelOutput
 from backend.app.models_engine.orchestrators.schemas import DigitalTwinSnapshot
 
@@ -36,6 +44,11 @@ class InMemoryBackendStore:
         self.model_outputs: dict[str, ModelOutput] = {}
         self.actuators: dict[str, ActuatorRead] = {}
         self.commands: dict[str, ActuationCommandDraft] = {}
+        self.cleaning_runs: dict[str, CleaningRunRead] = {}
+        self.feature_sets: dict[str, FeatureSetRead] = {}
+        self.training_jobs: dict[str, TrainingJobRead] = {}
+        self.training_job_events: dict[str, list[TrainingJobEventRead]] = {}
+        self.model_assets: dict[str, ModelAssetRead] = {}
 
     def create_farm(self, payload: FarmCreate) -> FarmRead:
         with self._lock:
@@ -309,9 +322,143 @@ class InMemoryBackendStore:
             outputs = [output for output in outputs if output.model_code == model_code]
         return list(reversed(outputs[-limit:]))
 
+    def save_clean_measurements(
+        self,
+        rows: list[CleanMeasurementRead],
+        overwrite_ids: bool = False,
+    ) -> list[CleanMeasurementRead]:
+        with self._lock:
+            for row in rows:
+                if overwrite_ids or row.id not in self.clean_measurements:
+                    self.clean_measurements[row.id] = row
+            return rows
+
+    def save_cleaning_run(self, cleaning_run: CleaningRunRead) -> CleaningRunRead:
+        with self._lock:
+            self.cleaning_runs[cleaning_run.run_id] = cleaning_run
+            return cleaning_run
+
+    def get_cleaning_run(self, run_id: str) -> CleaningRunRead | None:
+        with self._lock:
+            return self.cleaning_runs.get(run_id)
+
+    def list_cleaning_runs(self) -> list[CleaningRunRead]:
+        with self._lock:
+            return sorted(
+                self.cleaning_runs.values(),
+                key=lambda run: run.started_at,
+                reverse=True,
+            )
+
+    def save_feature_set(self, feature_set: FeatureSetRead) -> FeatureSetRead:
+        with self._lock:
+            self.feature_sets[feature_set.feature_set_id] = feature_set
+            return feature_set
+
+    def get_feature_set(self, feature_set_id: str) -> FeatureSetRead | None:
+        with self._lock:
+            return self.feature_sets.get(feature_set_id)
+
+    def list_feature_sets(self) -> list[FeatureSetRead]:
+        with self._lock:
+            return sorted(
+                self.feature_sets.values(),
+                key=lambda feature_set: feature_set.created_at,
+                reverse=True,
+            )
+
+    def save_training_job(self, job: TrainingJobRead) -> TrainingJobRead:
+        with self._lock:
+            self.training_jobs[job.job_id] = job
+            return job
+
+    def get_training_job(self, job_id: str) -> TrainingJobRead | None:
+        with self._lock:
+            return self.training_jobs.get(job_id)
+
+    def list_training_jobs(self) -> list[TrainingJobRead]:
+        with self._lock:
+            return sorted(
+                self.training_jobs.values(),
+                key=lambda job: job.requested_at,
+                reverse=True,
+            )
+
+    def append_training_job_event(
+        self,
+        event: TrainingJobEventRead,
+    ) -> TrainingJobEventRead:
+        with self._lock:
+            self.training_job_events.setdefault(event.job_id, []).append(event)
+            return event
+
+    def list_training_job_events(self, job_id: str) -> list[TrainingJobEventRead]:
+        with self._lock:
+            return list(self.training_job_events.get(job_id, []))
+
+    def save_model_asset(self, asset: ModelAssetRead) -> ModelAssetRead:
+        with self._lock:
+            self.model_assets[asset.asset_id] = asset
+            return asset
+
+    def get_model_asset(self, asset_id: str) -> ModelAssetRead | None:
+        with self._lock:
+            return self.model_assets.get(asset_id)
+
+    def list_model_assets(
+        self,
+        model_code: str | None = None,
+        status: str | None = None,
+    ) -> list[ModelAssetRead]:
+        with self._lock:
+            assets = list(self.model_assets.values())
+        if model_code is not None:
+            assets = [asset for asset in assets if asset.model_code == model_code]
+        if status is not None:
+            assets = [asset for asset in assets if asset.status == status]
+        return sorted(assets, key=lambda asset: asset.created_at, reverse=True)
+
+    def active_model_asset(self, model_code: str) -> ModelAssetRead | None:
+        assets = self.list_model_assets(model_code=model_code, status="active")
+        return assets[0] if assets else None
+
+    def activate_model_asset(self, asset_id: str) -> ModelAssetRead:
+        with self._lock:
+            asset = self.model_assets.get(asset_id)
+            if asset is None:
+                raise ValueError("asset_id does not exist")
+            for existing_id, existing in list(self.model_assets.items()):
+                if existing.model_code == asset.model_code and existing.status == "active":
+                    self.model_assets[existing_id] = existing.model_copy(
+                        update={
+                            "status": "deprecated",
+                            "deprecated_at": self._now(),
+                        }
+                    )
+            activated = asset.model_copy(
+                update={"status": "active", "activated_at": self._now()}
+            )
+            self.model_assets[asset_id] = activated
+            return activated
+
+    def deprecate_model_asset(self, asset_id: str) -> ModelAssetRead:
+        with self._lock:
+            asset = self.model_assets.get(asset_id)
+            if asset is None:
+                raise ValueError("asset_id does not exist")
+            deprecated = asset.model_copy(
+                update={"status": "deprecated", "deprecated_at": self._now()}
+            )
+            self.model_assets[asset_id] = deprecated
+            return deprecated
+
     @staticmethod
     def _new_id(prefix: str) -> str:
         return f"{prefix}-{uuid4()}"
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
 
     @staticmethod
     def _ensure_unique_code(rows: object, field_name: str, value: str) -> None:

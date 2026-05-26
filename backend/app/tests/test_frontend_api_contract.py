@@ -268,6 +268,11 @@ def test_openapi_exposes_frontend_backend_contract_paths() -> None:
     assert "/api/v1/frontend/dashboard" in paths
     assert "/api/v1/frontend/components" in paths
     assert "/api/v1/models/test-run-all" in paths
+    assert "/api/v1/datasets/coverage" in paths
+    assert "/api/v1/data/cleaning-runs" in paths
+    assert "/api/v1/features/build" in paths
+    assert "/api/v1/ml/training-jobs" in paths
+    assert "/api/v1/ml/model-assets" in paths
 
 
 def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
@@ -331,6 +336,7 @@ def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
     assert dashboard["component_summary"]["conditioned_components"] == 5
     assert dashboard["component_summary"]["executable_model_runners"] == batch_payload["total"]
     assert dashboard["model_summary"]["test_payload_enabled"] == batch_payload["total"]
+    assert dashboard["ml_lifecycle"]["training_enabled"] is True
     assert dashboard["evidence"]["scenarios"] >= batch_payload["total"]
     assert dashboard["traceability"]
     assert dashboard["frontend_contract_routes"]["test_run_all"] == "/models/test-run-all"

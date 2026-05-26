@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from backend.app.api.v1.dependencies import get_model_catalog_service, get_store
 from backend.app.application import InMemoryBackendStore, ModelCatalogService
+from backend.app.application.ml_lifecycle import MLLifecycleService
 
 router = APIRouter()
 
@@ -36,6 +37,8 @@ def get_frontend_dashboard(
         for model in models
     }
     outputs = store.list_model_outputs(limit=20)
+    ml_service = MLLifecycleService(store)
+    ml_status = ml_service.lifecycle_status()
     latest_snapshot = store.latest_snapshot(selected_pond_id) if selected_pond_id else None
     alerts = store.list_alerts(pond_id=selected_pond_id) if selected_pond_id else []
     recommendations = (
@@ -108,6 +111,7 @@ def get_frontend_dashboard(
             "test_payload_enabled": len(models),
             "test_run_ready_or_generated": generated_ready,
         },
+        "ml_lifecycle": ml_status.model_dump(mode="json"),
         "models": [
             {
                 **model.model_dump(mode="json"),
@@ -156,6 +160,9 @@ def get_frontend_dashboard(
             "reports": 1 if latest_snapshot else 0,
             "models": len(models),
             "datasets": len(variables),
+            "feature_sets": ml_status.total_feature_sets,
+            "training_jobs": ml_status.total_training_jobs,
+            "model_assets": ml_status.total_model_assets,
             "charts": len(clean_rows),
         },
         "traceability": [
@@ -178,6 +185,11 @@ def get_frontend_dashboard(
             "test_run_all": "/models/test-run-all",
             "components": "/frontend/components",
             "telemetry": "/telemetry/timeseries",
+            "datasets": "/datasets/coverage",
+            "cleaning_runs": "/data/cleaning-runs",
+            "features": "/features/build",
+            "training_jobs": "/ml/training-jobs",
+            "model_assets": "/ml/model-assets",
             "actuators": "/actuators",
         },
     }
