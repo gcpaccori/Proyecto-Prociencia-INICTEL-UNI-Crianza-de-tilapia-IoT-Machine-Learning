@@ -46,6 +46,17 @@ def get_frontend_dashboard(
     artifact_models = [
         model for model in models if model.readiness_status == "requires_external_artifact"
     ]
+    components = _component_catalog(models)
+    integrable_components = [
+        component
+        for component in components
+        if component["viability_status"] == "integrable"
+    ]
+    conditioned_components = [
+        component
+        for component in components
+        if component["viability_status"] == "conditioned"
+    ]
     generated_ready = sum(
         1
         for audit in audits.values()
@@ -76,6 +87,19 @@ def get_frontend_dashboard(
             "variables": len(variables),
         },
         "project_map": _project_map(models),
+        "component_summary": {
+            "total_components": len(components),
+            "integrable_components": len(integrable_components),
+            "conditioned_components": len(conditioned_components),
+            "executable_model_runners": len(models),
+            "tested_model_runners_route": "/models/test-run-all",
+            "components_route": "/frontend/components",
+            "note": (
+                "13 corresponde a runners ejecutables; 40 corresponde a "
+                "componentes integrables de arquitectura, datos, formulas y ML."
+            ),
+        },
+        "components": components,
         "model_summary": {
             "total": len(models),
             "ready": len(ready_models),
@@ -151,9 +175,130 @@ def get_frontend_dashboard(
             "dashboard": "/frontend/dashboard",
             "models": "/models",
             "test_run_all": "/models/test-run-all",
+            "components": "/frontend/components",
             "telemetry": "/telemetry/timeseries",
             "actuators": "/actuators",
         },
+    }
+
+
+@router.get("/frontend/components")
+def list_frontend_components(
+    catalog: ModelCatalogService = Depends(get_model_catalog_service),
+) -> dict[str, object]:
+    models = catalog.list_models()
+    components = _component_catalog(models)
+    integrable = [
+        component
+        for component in components
+        if component["viability_status"] == "integrable"
+    ]
+    conditioned = [
+        component
+        for component in components
+        if component["viability_status"] == "conditioned"
+    ]
+    return {
+        "total_components": len(components),
+        "integrable_components": len(integrable),
+        "conditioned_components": len(conditioned),
+        "executable_model_runners": len(models),
+        "components": components,
+    }
+
+
+def _component_catalog(models: list[object]) -> list[dict[str, object]]:
+    model_by_code = {model.model_code: model for model in models}
+    rows = [
+        ("C01", "oxygen_water_quality", "Modelo dinamico 0D de oxigeno disuelto", "model_runner", "DO_DYNAMIC_0D_ROYER_2021"),
+        ("C02", "oxygen_water_quality", "Modelo 1D de transporte de oxigeno disuelto", "model_runner", "DO_TRANSPORT_1D"),
+        ("C03", "oxygen_water_quality", "Calculo de saturacion de oxigeno", "formula_core", None),
+        ("C04", "oxygen_water_quality", "Balance de oxigeno RAS", "model_runner", "RAS_OXYGEN_BALANCE"),
+        ("C05", "oxygen_water_quality", "Pipeline estadistico de calidad de agua", "algorithm", None),
+        ("C06", "oxygen_water_quality", "Pearson-LSTM-AM para calidad de agua", "model_runner", "PEARSON_LSTM_ATTENTION_WQ"),
+        ("C07", "oxygen_water_quality", "LSTM tradicional para calidad de agua", "trainable_component", None),
+        ("C08", "oxygen_water_quality", "Pearson-LSTM para seleccion y forecast", "trainable_component", None),
+        ("C09", "growth_bioenergetic", "Crecimiento lineal Soderberg", "model_runner", "SODERBERG_LINEAR_GROWTH"),
+        ("C10", "growth_bioenergetic", "Regresiones Taylor por especie", "formula_core", None),
+        ("C11", "growth_bioenergetic", "Relacion longitud-peso Tilapia del Nilo", "formula_core", None),
+        ("C12", "growth_bioenergetic", "Modelo ambiental de crecimiento Yi", "model_runner", "YI_ENVIRONMENTAL_GROWTH"),
+        ("C13", "growth_bioenergetic", "Modelo bioenergetico Brigolin", "model_runner", "BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010"),
+        ("C14", "growth_bioenergetic", "Modelo de racion diaria", "model_runner", "DAILY_RATION_MODEL"),
+        ("C15", "growth_bioenergetic", "Tasa de alimentacion Haskell", "formula_core", None),
+        ("C16", "growth_bioenergetic", "Indicadores zootecnicos", "model_runner", "ZOOTECHNIC_INDEXES"),
+        ("C17", "growth_bioenergetic", "Reglas de saciedad alimentaria", "model_runner", "FEEDING_SATIETY_RULES"),
+        ("C18", "growth_bioenergetic", "Analitica de alimentacion por fases", "algorithm", None),
+        ("C19", "ml_tabular_statistics", "Regresion lineal de telemetria", "trainable_component", None),
+        ("C20", "ml_tabular_statistics", "Regresion multiple de calidad de agua", "trainable_component", None),
+        ("C21", "ml_tabular_statistics", "SVM para regresion/clasificacion", "trainable_component", None),
+        ("C22", "ml_tabular_statistics", "Random Forest tabular", "trainable_component", None),
+        ("C23", "ml_tabular_statistics", "Arboles de decision", "trainable_component", None),
+        ("C24", "ml_tabular_statistics", "K-Means para agrupamiento", "trainable_component", None),
+        ("C25", "ml_tabular_statistics", "PCA para reduccion dimensional", "trainable_component", None),
+        ("C26", "ml_tabular_statistics", "KNN tabular", "trainable_component", None),
+        ("C27", "ml_tabular_statistics", "SOM para mapas autoorganizados", "trainable_component", None),
+        ("C28", "ml_tabular_statistics", "BPNN-MEA consumo de alimento", "model_runner", "BPNN_MEA_FEED_INTAKE"),
+        ("C29", "ml_tabular_statistics", "Q-Learning para politica operativa simulada", "trainable_component", None),
+        ("C30", "architecture_twin", "Contenedor FastAPI backend", "backend_module", None),
+        ("C31", "architecture_twin", "Base MySQL aquaculture_digital_twin", "data_module", None),
+        ("C32", "architecture_twin", "Sincronizacion legacy solo lectura", "data_module", None),
+        ("C33", "architecture_twin", "Catalogo de modelos", "backend_module", None),
+        ("C34", "architecture_twin", "Auditoria de inputs para formularios", "backend_module", None),
+        ("C35", "architecture_twin", "Generador de payloads de prueba", "backend_module", None),
+        ("C36", "architecture_twin", "Ejecucion global test-run-all", "backend_module", None),
+        ("C37", "architecture_twin", "Estado del gemelo digital", "backend_module", None),
+        ("C38", "architecture_twin", "Snapshots, riesgos y recomendaciones", "backend_module", None),
+        ("C39", "architecture_twin", "Politica de actuacion", "backend_module", None),
+        ("C40", "architecture_twin", "Dashboard agregado para frontend", "backend_module", None),
+    ]
+    conditioned = [
+        ("C41", "conditioned_external", "CNN de segmentacion para roturas de malla", "external_dataset_required", None),
+        ("C42", "conditioned_external", "CNN/I3D de saciedad por video subacuatico", "external_dataset_required", None),
+        ("C43", "conditioned_external", "Comportamiento matematico de peces por tracking", "external_dataset_required", None),
+        ("C44", "conditioned_external", "Distribucion de alimento por CFD y corrientes", "external_dataset_required", None),
+        ("C45", "conditioned_external", "Modelo mecanistico predictivo de amoniaco", "formula_research_required", None),
+    ]
+    return [
+        _component_item(code, family, title, kind, linked_model_code, model_by_code, "integrable")
+        for code, family, title, kind, linked_model_code in rows
+    ] + [
+        _component_item(code, family, title, kind, linked_model_code, model_by_code, "conditioned")
+        for code, family, title, kind, linked_model_code in conditioned
+    ]
+
+
+def _component_item(
+    code: str,
+    family: str,
+    title: str,
+    kind: str,
+    linked_model_code: str | None,
+    model_by_code: dict[str, object],
+    viability_status: str,
+) -> dict[str, object]:
+    model = model_by_code.get(linked_model_code) if linked_model_code else None
+    status = "conditioned_external_data" if viability_status == "conditioned" else "integrable"
+    if model is not None:
+        status = model.readiness_status
+    routes = {}
+    if linked_model_code:
+        routes = {
+            "details": f"/models/{linked_model_code}",
+            "input_audit": f"/models/{linked_model_code}/input-audit",
+            "test_payload": f"/models/{linked_model_code}/test-payload",
+            "test_run": f"/models/{linked_model_code}/test-run",
+            "run": f"/models/{linked_model_code}/run",
+        }
+    return {
+        "component_code": code,
+        "family": family,
+        "title": title,
+        "kind": kind,
+        "viability_status": viability_status,
+        "backend_status": status,
+        "linked_model_code": linked_model_code,
+        "is_executable_model_runner": model is not None,
+        "routes": routes,
     }
 
 

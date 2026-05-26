@@ -47,6 +47,19 @@ GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}
 
 `frontend/dashboard` entrega un paquete agregado para la pantalla principal: backend online, granjas, estanques, tarjetas del mapa integral, resumen de modelos, calidad de agua actual, rutas de accion, evidencia y trazabilidad.
 
+Importante: `models` no significa los 45 componentes del proyecto. `models` son los 13 runners ejecutables por API. Los 45 componentes completos se consultan en:
+
+```text
+GET /frontend/components
+```
+
+Ese catalogo separa:
+
+- `total_components`: 45
+- `integrable_components`: 40
+- `conditioned_components`: 5
+- `executable_model_runners`: 13
+
 ## Flujo principal del frontend
 
 1. Seleccionar granja y estanque.
@@ -111,6 +124,8 @@ Campos principales de respuesta:
 - `ponds`
 - `system_metrics`
 - `project_map`
+- `component_summary`
+- `components`
 - `model_summary`
 - `models`
 - `water_quality_current`
@@ -144,6 +159,7 @@ GET /telemetry/clean?pond_id={pond_id}&variable_code={variable}&limit={n}
 GET /telemetry/timeseries?pond_id={pond_id}&variable_code={variable}&limit={n}
 GET /twin/state/{pond_id}
 GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}
+GET /frontend/components
 ```
 
 ### 2. Catalogo de modelos
@@ -176,6 +192,7 @@ GET /models/{model_code}/input-audit?pond_id={pond_id}
 GET /models/{model_code}/test-payload?pond_id={pond_id}
 POST /models/{model_code}/test-run?pond_id={pond_id}
 POST /models/test-run-all?pond_id={pond_id}
+GET /frontend/components
 ```
 
 ### 3. Ejecutor de modelo
@@ -236,6 +253,47 @@ POST /models/ml/water-quality/forecast
 ```
 
 ## Como completar inputs por modelo
+
+## Catalogo de 45 componentes
+
+El dashboard debe tratar estos numeros como diferentes:
+
+- 45 componentes auditados del proyecto completo.
+- 40 componentes integrables en la arquitectura actual.
+- 5 componentes condicionados por datasets externos o formulacion faltante.
+- 13 runners de modelo ejecutables directamente por `/models`.
+
+Ruta:
+
+```text
+GET /frontend/components
+```
+
+Familias del catalogo:
+
+- `oxygen_water_quality`: 8 componentes.
+- `growth_bioenergetic`: 10 componentes.
+- `ml_tabular_statistics`: 11 componentes.
+- `architecture_twin`: 11 componentes.
+- `conditioned_external`: 5 componentes.
+
+Campos por componente:
+
+- `component_code`
+- `family`
+- `title`
+- `kind`
+- `viability_status`
+- `backend_status`
+- `linked_model_code`
+- `is_executable_model_runner`
+- `routes`
+
+Regla visual:
+
+- Si `is_executable_model_runner` es `true`, el frontend puede mostrar boton de `test-run`, `test-payload` y `run`.
+- Si `viability_status` es `integrable` pero no tiene `linked_model_code`, debe mostrarse como componente soportado por arquitectura, algoritmo, tabla, flujo o modulo backend.
+- Si `viability_status` es `conditioned`, debe mostrarse como pendiente de datos externos o investigacion, no como falla del backend.
 
 ### DO_DYNAMIC_0D_ROYER_2021
 

@@ -266,6 +266,7 @@ def test_openapi_exposes_frontend_backend_contract_paths() -> None:
     assert "/api/v1/alerts" in paths
     assert "/api/v1/actuation-commands/from-recommendation" in paths
     assert "/api/v1/frontend/dashboard" in paths
+    assert "/api/v1/frontend/components" in paths
     assert "/api/v1/models/test-run-all" in paths
 
 
@@ -324,7 +325,18 @@ def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
     dashboard = dashboard_response.json()
     assert dashboard["backend"]["status"] == "online"
     assert dashboard["selection"]["pond_id"] == pond_id
+    assert dashboard["component_summary"]["total_components"] == 45
+    assert dashboard["component_summary"]["integrable_components"] == 40
+    assert dashboard["component_summary"]["conditioned_components"] == 5
+    assert dashboard["component_summary"]["executable_model_runners"] == batch_payload["total"]
     assert dashboard["model_summary"]["test_payload_enabled"] == batch_payload["total"]
     assert dashboard["evidence"]["scenarios"] >= batch_payload["total"]
     assert dashboard["traceability"]
     assert dashboard["frontend_contract_routes"]["test_run_all"] == "/models/test-run-all"
+
+    components_response = client.get("/api/v1/frontend/components")
+    assert components_response.status_code == 200
+    components = components_response.json()
+    assert components["total_components"] == 45
+    assert components["integrable_components"] == 40
+    assert components["conditioned_components"] == 5
