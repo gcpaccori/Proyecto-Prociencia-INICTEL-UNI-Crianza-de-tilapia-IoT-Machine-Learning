@@ -138,3 +138,47 @@ def temporal_train_validation_test_split(
         "validation": rows[train_end:validation_end],
         "test": rows[validation_end:],
     }
+
+
+def regression_metrics(
+    observed: list[float],
+    predicted: list[float],
+) -> dict[str, float]:
+    if len(observed) != len(predicted) or not observed:
+        raise ValueError("observed and predicted must be non-empty and aligned")
+    obs = [float(value) for value in observed]
+    pred = [float(value) for value in predicted]
+    errors = [obs_i - pred_i for obs_i, pred_i in zip(obs, pred)]
+    mse = sum(error**2 for error in errors) / len(errors)
+    mae = sum(abs(error) for error in errors) / len(errors)
+    mean_obs = sum(obs) / len(obs)
+    total = sum((value - mean_obs) ** 2 for value in obs)
+    residual = sum(error**2 for error in errors)
+    return {
+        "mse": mse,
+        "rmse": mse**0.5,
+        "mae": mae,
+        "r2": 1.0 - residual / total if total else 0.0,
+    }
+
+
+def classification_metrics(
+    observed: list[object],
+    predicted: list[object],
+    positive_label: object = 1,
+) -> dict[str, float]:
+    if len(observed) != len(predicted) or not observed:
+        raise ValueError("observed and predicted must be non-empty and aligned")
+    tp = sum(1 for obs, pred in zip(observed, predicted) if obs == positive_label and pred == positive_label)
+    fp = sum(1 for obs, pred in zip(observed, predicted) if obs != positive_label and pred == positive_label)
+    fn = sum(1 for obs, pred in zip(observed, predicted) if obs == positive_label and pred != positive_label)
+    correct = sum(1 for obs, pred in zip(observed, predicted) if obs == pred)
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    recall = tp / (tp + fn) if tp + fn else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "accuracy": correct / len(observed),
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }

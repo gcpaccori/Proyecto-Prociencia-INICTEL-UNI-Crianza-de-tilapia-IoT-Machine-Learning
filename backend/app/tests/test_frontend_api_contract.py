@@ -327,6 +327,7 @@ def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
     assert dashboard["selection"]["pond_id"] == pond_id
     assert dashboard["component_summary"]["total_components"] == 45
     assert dashboard["component_summary"]["integrable_components"] == 40
+    assert dashboard["component_summary"]["implemented_components"] == 40
     assert dashboard["component_summary"]["conditioned_components"] == 5
     assert dashboard["component_summary"]["executable_model_runners"] == batch_payload["total"]
     assert dashboard["model_summary"]["test_payload_enabled"] == batch_payload["total"]
@@ -339,4 +340,10 @@ def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
     components = components_response.json()
     assert components["total_components"] == 45
     assert components["integrable_components"] == 40
+    assert components["implemented_components"] == 40
     assert components["conditioned_components"] == 5
+    assert sum(
+        1
+        for component in components["components"]
+        if component["implementation_status"] == "implemented_backend"
+    ) == 40

@@ -57,8 +57,17 @@ Ese catalogo separa:
 
 - `total_components`: 45
 - `integrable_components`: 40
+- `implemented_components`: 40
 - `conditioned_components`: 5
 - `executable_model_runners`: 13
+
+Los 40 no son todos endpoints `/models/{code}/run`. Los 40 estan implementados en backend como una mezcla de:
+
+- runners ejecutables;
+- funciones matematicas puras;
+- algoritmos tabulares/series temporales;
+- preprocesamiento y metricas;
+- modulos de datos, dashboard, auditoria, trazabilidad y gemelo digital.
 
 ## Flujo principal del frontend
 
@@ -259,7 +268,7 @@ POST /models/ml/water-quality/forecast
 El dashboard debe tratar estos numeros como diferentes:
 
 - 45 componentes auditados del proyecto completo.
-- 40 componentes integrables en la arquitectura actual.
+- 40 componentes implementados en la arquitectura actual.
 - 5 componentes condicionados por datasets externos o formulacion faltante.
 - 13 runners de modelo ejecutables directamente por `/models`.
 
@@ -284,6 +293,8 @@ Campos por componente:
 - `title`
 - `kind`
 - `viability_status`
+- `implementation_status`
+- `implementation_ref`
 - `backend_status`
 - `linked_model_code`
 - `is_executable_model_runner`
@@ -292,7 +303,7 @@ Campos por componente:
 Regla visual:
 
 - Si `is_executable_model_runner` es `true`, el frontend puede mostrar boton de `test-run`, `test-payload` y `run`.
-- Si `viability_status` es `integrable` pero no tiene `linked_model_code`, debe mostrarse como componente soportado por arquitectura, algoritmo, tabla, flujo o modulo backend.
+- Si `implementation_status` es `implemented_backend` pero no tiene `linked_model_code`, debe mostrarse como componente implementado por arquitectura, algoritmo, tabla, flujo o modulo backend.
 - Si `viability_status` es `conditioned`, debe mostrarse como pendiente de datos externos o investigacion, no como falla del backend.
 
 ### DO_DYNAMIC_0D_ROYER_2021

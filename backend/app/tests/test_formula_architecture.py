@@ -6,20 +6,44 @@ from fastapi.testclient import TestClient
 from backend.app.core.config import Settings
 from backend.app.main import create_app
 from backend.app.models_engine.deterministic import (
+    calibration_objective,
     do_saturation,
     haskell_feed_rate,
+    oxygen_supply_rate,
     ras_oxygen_balance,
+    respiration_sinusoidal,
     soderberg_delta_l,
     update_do_0d,
     update_do_1d,
     yi_growth_rate,
     zootechnic_indexes,
 )
+from backend.app.models_engine.ml import (
+    attention_context,
+    attention_weights,
+    covariance_matrix,
+    epsilon_svr_loss,
+    kmeans_fit,
+    knn_classification_predict,
+    knn_regression_predict,
+    linear_regression_predict,
+    logistic_probability,
+    lstm_scalar_step,
+    pca_project,
+    q_learning_update,
+    random_forest_classification_predict,
+    random_forest_regression_predict,
+    som_gaussian_neighborhood,
+    som_update_weight,
+    svm_hinge_loss,
+)
 from backend.app.models_engine.ml.preprocessing import (
+    classification_metrics,
     linear_interpolate_missing,
     make_time_windows,
     minmax_normalize,
     pearson_correlation,
+    regression_metrics,
     sigma3_flags,
     temporal_train_validation_test_split,
 )
@@ -27,6 +51,8 @@ from backend.app.models_engine.ml.preprocessing import (
 
 def test_deterministic_formula_core_has_no_nan_outputs() -> None:
     assert do_saturation(25.0) == pytest.approx(8.5561875)
+    assert respiration_sinusoidal(0.0, 25.0, 10.0, 2.0, 0.0) > 0
+    assert oxygen_supply_rate(2400, 101325, 32, 25, 20) > 0
     assert update_do_0d(6.0, 7.0, 1000.0, 2000.0, 0.2, 0.05, 8.9, 20.0, 10.0, 1.0) >= 0
     assert update_do_1d([6.0, 5.8], [8.9, 8.9], [10.0, 20.0], 1.0, 0.05, 10.0, 4.0, 2.0, 1.0)
     ras = ras_oxygen_balance(6.0, 80.0, 27.0, 3.2, 1200, 30.0, 96.0, 1.0)
@@ -49,6 +75,7 @@ def test_deterministic_formula_core_has_no_nan_outputs() -> None:
         n=0.8,
     )
     soderberg = soderberg_delta_l(27.0, "nile tilapia")
+    trout = soderberg_delta_l(10.0, "brook trout")
     indexes = zootechnic_indexes(120.0, 80.0, 18.0, 30.0, 1000, 1200, 30000.0)
 
     for payload in (ras, growth, soderberg, indexes):
@@ -57,7 +84,9 @@ def test_deterministic_formula_core_has_no_nan_outputs() -> None:
                 assert not math.isnan(value)
     assert 0 <= growth["tau"] <= 1
     assert 0 <= growth["delta"] <= 1
+    assert trout["species"] == "brook trout"
     assert haskell_feed_rate(1.5, 2.0, 100.0) == pytest.approx(9.0)
+    assert calibration_objective([1, 2, 3], [1, 2, 4], "sse") == pytest.approx(1.0)
 
 
 def test_ml_preprocessing_contracts() -> None:
@@ -73,6 +102,50 @@ def test_ml_preprocessing_contracts() -> None:
     assert split["train"] == [0, 1, 2, 3, 4, 5]
     assert split["validation"] == [6, 7]
     assert split["test"] == [8, 9]
+    assert regression_metrics([1, 2, 3], [1, 2, 4])["rmse"] == pytest.approx((1 / 3) ** 0.5)
+    assert classification_metrics([1, 0, 1], [1, 0, 0])["accuracy"] == pytest.approx(2 / 3)
+
+
+def test_tabular_and_sequence_algorithms_are_implemented() -> None:
+    assert linear_regression_predict([2, 3], [0.5, 1.0], 1.0) == pytest.approx(5.0)
+    assert logistic_probability([1], [0], 0) == pytest.approx(0.5)
+    assert svm_hinge_loss([[1, 1]], [1], [1, 1], 0.0) == pytest.approx(1.0)
+    assert epsilon_svr_loss([1.0, 2.0], [1.2, 1.8], 0.1) == pytest.approx(0.2)
+    assert random_forest_regression_predict([1, 2, 3]) == pytest.approx(2.0)
+    assert random_forest_classification_predict(["a", "b", "a"]) == "a"
+    kmeans = kmeans_fit([[0, 0], [1, 1], [10, 10]], [[0, 0], [10, 10]], 2)
+    assert len(kmeans["assignments"]) == 3
+    assert covariance_matrix([[1, 2], [3, 4], [5, 6]])[0][0] == pytest.approx(4.0)
+    assert pca_project([[1, 2], [3, 4]], [[1, 0]]) == [[-1.0], [1.0]]
+    assert knn_regression_predict([[0], [2], [4]], [0, 2, 4], [1], 2) == pytest.approx(1.0)
+    assert knn_classification_predict([[0], [2], [4]], ["low", "mid", "high"], [3], 1) == "mid"
+    neighborhood = som_gaussian_neighborhood([0, 0], [1, 0], 1.0)
+    assert 0 < neighborhood < 1
+    assert som_update_weight([0, 0], [1, 1], 0.5, 1.0) == [0.5, 0.5]
+    assert q_learning_update(1.0, 2.0, 3.0, 0.5, 0.9) == pytest.approx(2.85)
+
+    lstm = lstm_scalar_step(
+        [1.0],
+        [0.0],
+        0.0,
+        {
+            "forget": [1.0],
+            "input": [1.0],
+            "candidate": [1.0],
+            "output": [1.0],
+        },
+        {
+            "forget": [0.0],
+            "input": [0.0],
+            "candidate": [0.0],
+            "output": [0.0],
+        },
+        {},
+    )
+    assert 0 <= lstm["input_gate"] <= 1
+    weights = attention_weights([[1, 0], [0, 1]], [1, 0])
+    assert sum(weights) == pytest.approx(1.0)
+    assert attention_context([[1, 0], [0, 1]], weights)[0] > 0.5
 
 
 def test_classified_model_routes_use_common_runner_contract() -> None:

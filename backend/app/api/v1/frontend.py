@@ -90,6 +90,7 @@ def get_frontend_dashboard(
         "component_summary": {
             "total_components": len(components),
             "integrable_components": len(integrable_components),
+            "implemented_components": len(integrable_components),
             "conditioned_components": len(conditioned_components),
             "executable_model_runners": len(models),
             "tested_model_runners_route": "/models/test-run-all",
@@ -201,6 +202,7 @@ def list_frontend_components(
     return {
         "total_components": len(components),
         "integrable_components": len(integrable),
+        "implemented_components": len(integrable),
         "conditioned_components": len(conditioned),
         "executable_model_runners": len(models),
         "components": components,
@@ -280,6 +282,12 @@ def _component_item(
     status = "conditioned_external_data" if viability_status == "conditioned" else "integrable"
     if model is not None:
         status = model.readiness_status
+    implementation_status = (
+        "conditioned_pending"
+        if viability_status == "conditioned"
+        else "implemented_backend"
+    )
+    implementation_ref = _implementation_ref(kind, linked_model_code)
     routes = {}
     if linked_model_code:
         routes = {
@@ -295,11 +303,26 @@ def _component_item(
         "title": title,
         "kind": kind,
         "viability_status": viability_status,
+        "implementation_status": implementation_status,
+        "implementation_ref": implementation_ref,
         "backend_status": status,
         "linked_model_code": linked_model_code,
         "is_executable_model_runner": model is not None,
         "routes": routes,
     }
+
+
+def _implementation_ref(kind: str, linked_model_code: str | None) -> str | None:
+    if linked_model_code:
+        return f"models_engine.runner.{linked_model_code}"
+    refs = {
+        "formula_core": "backend.app.models_engine.deterministic / bioenergetic",
+        "algorithm": "backend.app.models_engine.ml.preprocessing",
+        "trainable_component": "backend.app.models_engine.ml.tabular_algorithms / sequence_algorithms",
+        "backend_module": "backend.app.api.v1 / application services",
+        "data_module": "backend.app.application.mysql_store",
+    }
+    return refs.get(kind)
 
 
 def _project_map(models: list[object]) -> list[dict[str, object]]:
