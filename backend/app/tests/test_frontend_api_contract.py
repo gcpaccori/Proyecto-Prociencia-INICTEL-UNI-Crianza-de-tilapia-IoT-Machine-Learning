@@ -265,3 +265,66 @@ def test_openapi_exposes_frontend_backend_contract_paths() -> None:
     assert "/api/v1/digital-twin/{pond_id}/snapshot" in paths
     assert "/api/v1/alerts" in paths
     assert "/api/v1/actuation-commands/from-recommendation" in paths
+    assert "/api/v1/frontend/dashboard" in paths
+    assert "/api/v1/models/test-run-all" in paths
+
+
+def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
+    app = create_app(Settings(environment="test"))
+    client = TestClient(app)
+
+    farm_id = client.post(
+        "/api/v1/farms",
+        json={"code": "FARM-DASH", "name": "Dashboard Farm"},
+    ).json()["id"]
+    pond_id = client.post(
+        "/api/v1/ponds",
+        json={
+            "farm_id": farm_id,
+            "code": "POND-DASH",
+            "name": "Dashboard Pond",
+            "water_volume_l": 1280,
+        },
+    ).json()["id"]
+    sensor_id = client.post(
+        "/api/v1/sensors",
+        json={
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_code": "DO-DASH",
+            "variable_code": "dissolved_oxygen_mg_l",
+        },
+    ).json()["id"]
+    client.post(
+        "/api/v1/measurements/ingest",
+        json={
+            "farm_id": farm_id,
+            "pond_id": pond_id,
+            "sensor_id": sensor_id,
+            "variable_code": "dissolved_oxygen_mg_l",
+            "raw_value": 6.4,
+            "raw_unit": "mg/L",
+        },
+    )
+
+    batch_response = client.post(
+        "/api/v1/models/test-run-all",
+        params={"pond_id": pond_id},
+    )
+    assert batch_response.status_code == 200
+    batch_payload = batch_response.json()
+    assert batch_payload["failed"] == 0
+    assert batch_payload["succeeded"] == batch_payload["total"]
+
+    dashboard_response = client.get(
+        "/api/v1/frontend/dashboard",
+        params={"farm_id": farm_id, "pond_id": pond_id},
+    )
+    assert dashboard_response.status_code == 200
+    dashboard = dashboard_response.json()
+    assert dashboard["backend"]["status"] == "online"
+    assert dashboard["selection"]["pond_id"] == pond_id
+    assert dashboard["model_summary"]["test_payload_enabled"] == batch_payload["total"]
+    assert dashboard["evidence"]["scenarios"] >= batch_payload["total"]
+    assert dashboard["traceability"]
+    assert dashboard["frontend_contract_routes"]["test_run_all"] == "/models/test-run-all"

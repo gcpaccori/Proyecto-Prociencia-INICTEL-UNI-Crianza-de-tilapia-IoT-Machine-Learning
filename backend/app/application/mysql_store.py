@@ -698,6 +698,34 @@ class MySQLBackendStore:
             )
         return stored_output
 
+    def list_model_outputs(
+        self,
+        model_code: str | None = None,
+        limit: int = 100,
+    ) -> list[ModelOutput]:
+        if model_code is None:
+            rows = self._fetch_all(
+                """
+                SELECT payload_json
+                FROM model_outputs
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """,
+                {"limit": limit},
+            )
+        else:
+            rows = self._fetch_all(
+                """
+                SELECT payload_json
+                FROM model_outputs
+                WHERE model_code = :model_code
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """,
+                {"model_code": model_code, "limit": limit},
+            )
+        return [ModelOutput.model_validate_json(str(row["payload_json"])) for row in rows]
+
     def _list_snapshots(self, pond_id: str | None = None) -> list[DigitalTwinSnapshot]:
         if pond_id is None:
             rows = self._fetch_all(

@@ -174,15 +174,45 @@ class ModelCatalogService:
                 "Modelo ejecutado en modo dry_run/metadata cuando requiere artefacto externo."
             )
 
+        request = ModelRunRequest(
+            pond_id=pond_id,
+            inputs=inputs,
+            parameters=parameters,
+        )
+        if auto_input_names and not self._test_request_executes(runner, request):
+            notes.append(
+                "Inputs automaticos fuera del dominio de prueba; se usaron valores generados validos."
+            )
+            auto_input_names = []
+            generated_input_names = list(runner.metadata.inputs)
+            inputs = {
+                input_name: ModelInputValue(
+                    value=self._sample_value_for_input(input_name, unit),
+                    unit=unit,
+                    quality_flag="generated_test_value",
+                )
+                for input_name, unit in runner.metadata.inputs.items()
+            }
+            if model_code == "PEARSON_LSTM_ATTENTION_WQ":
+                inputs = {
+                    input_name: input_value.model_copy(
+                        update={
+                            "value": self._sample_timeseries_for_input(input_name),
+                        }
+                    )
+                    for input_name, input_value in inputs.items()
+                }
+            request = ModelRunRequest(
+                pond_id=pond_id,
+                inputs=inputs,
+                parameters=parameters,
+            )
+
         return ModelTestPayload(
             model_code=model_code,
             pond_id=pond_id,
             readiness_status=audit.readiness_status,
-            request=ModelRunRequest(
-                pond_id=pond_id,
-                inputs=inputs,
-                parameters=parameters,
-            ),
+            request=request,
             auto_input_names=auto_input_names,
             generated_input_names=generated_input_names,
             blocked_by=audit.blocked_by,
@@ -212,6 +242,33 @@ class ModelCatalogService:
             metadata={"api": "models_run"},
         )
         return runner.run(model_input=model_input, context=context)
+
+    def _test_request_executes(
+        self,
+        runner: object,
+        request: ModelRunRequest,
+    ) -> bool:
+        try:
+            model_input = ModelInput(
+                model_code=runner.model_code,
+                timestamp=request.timestamp,
+                pond_id=request.pond_id,
+                farm_id=request.farm_id,
+                inputs=request.inputs,
+                parameters=request.parameters,
+            )
+            context = ModelRunContext(
+                model_code=runner.model_code,
+                model_version=runner.model_version,
+                source_report=runner.source_report,
+                pond_id=request.pond_id,
+                timestamp=request.timestamp,
+                metadata={"api": "models_test_payload_probe"},
+            )
+            runner.run(model_input=model_input, context=context)
+        except (RuntimeError, ValueError):
+            return False
+        return True
 
     def _to_catalog_item(self, runner: object) -> ModelCatalogItem:
         metadata = runner.metadata

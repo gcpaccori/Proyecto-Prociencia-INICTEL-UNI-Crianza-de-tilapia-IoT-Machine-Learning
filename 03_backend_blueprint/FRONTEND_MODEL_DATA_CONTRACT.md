@@ -33,6 +33,8 @@ GET /models
 GET /models/{model_code}/input-audit?pond_id={pond_id}
 GET /models/{model_code}/test-payload?pond_id={pond_id}
 POST /models/{model_code}/test-run?pond_id={pond_id}
+POST /models/test-run-all?pond_id={pond_id}
+GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}
 ```
 
 `input-audit` dice que entradas salen automaticamente de BD, que entradas faltan por formulario, que unidad exacta debe enviarse y si el modelo esta bloqueado por artefacto pendiente.
@@ -40,6 +42,10 @@ POST /models/{model_code}/test-run?pond_id={pond_id}
 `test-payload` genera un payload completo mezclando inputs reales disponibles en BD y valores marcados como `generated_test_value` para los campos faltantes. Sirve para probar formularios, rutas y salidas sin inventar datos dentro del frontend.
 
 `test-run` ejecuta ese payload de prueba. En modelos con artefacto pendiente agrega `dry_run`/`metadata_only` automaticamente; por eso puede validar contrato aunque todavia no exista predictor entrenado.
+
+`test-run-all` ejecuta todos los modelos registrados con datos reales disponibles y valores generados donde falten. Debe usarse como comprobacion global del backend.
+
+`frontend/dashboard` entrega un paquete agregado para la pantalla principal: backend online, granjas, estanques, tarjetas del mapa integral, resumen de modelos, calidad de agua actual, rutas de accion, evidencia y trazabilidad.
 
 ## Flujo principal del frontend
 
@@ -78,6 +84,42 @@ La unidad debe ser exacta. Ejemplo: `h^-1` no debe enviarse como `h-1`.
 
 ## Pantallas que debe asumir el frontend
 
+### 0. Resumen integral del proyecto
+
+Esta pantalla puede consumir una sola ruta agregada:
+
+```text
+GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}&range_label=Ultimas%2024%20horas
+```
+
+Debe alimentar:
+
+- estado `Backend ONLINE`;
+- selectores de granja, estanque y rango temporal;
+- mapa integral de siete entregables;
+- resumen de modelos y estados;
+- calidad de agua actual;
+- evidencia generada;
+- tabla de trazabilidad;
+- rutas disponibles para ejecutar modelos, gemelo y actuadores.
+
+Campos principales de respuesta:
+
+- `backend`
+- `selection`
+- `farms`
+- `ponds`
+- `system_metrics`
+- `project_map`
+- `model_summary`
+- `models`
+- `water_quality_current`
+- `timeseries`
+- `digital_twin`
+- `evidence`
+- `traceability`
+- `frontend_contract_routes`
+
 ### 1. Operacion en vivo
 
 Primera pantalla despues de entrar. Debe verse como una consola clara de produccion, no como pagina informativa.
@@ -101,6 +143,7 @@ GET /sensors?pond_id={pond_id}
 GET /telemetry/clean?pond_id={pond_id}&variable_code={variable}&limit={n}
 GET /telemetry/timeseries?pond_id={pond_id}&variable_code={variable}&limit={n}
 GET /twin/state/{pond_id}
+GET /frontend/dashboard?farm_id={farm_id}&pond_id={pond_id}
 ```
 
 ### 2. Catalogo de modelos
@@ -132,6 +175,7 @@ GET /models/{model_code}
 GET /models/{model_code}/input-audit?pond_id={pond_id}
 GET /models/{model_code}/test-payload?pond_id={pond_id}
 POST /models/{model_code}/test-run?pond_id={pond_id}
+POST /models/test-run-all?pond_id={pond_id}
 ```
 
 ### 3. Ejecutor de modelo
@@ -163,9 +207,12 @@ Rutas para probar cualquier modelo sin depender de que la BD ya tenga todos los 
 ```text
 GET /models/{model_code}/test-payload?pond_id={pond_id}
 POST /models/{model_code}/test-run?pond_id={pond_id}
+POST /models/test-run-all?pond_id={pond_id}
 ```
 
 La UI debe mostrar claramente que esos valores son de prueba cuando `quality_flag` sea `generated_test_value`.
+
+Si un dato real de BD existe pero cae fuera del dominio matematico de una prueba, el backend cambia esa prueba a valores generados validos y lo informa en `notes`. Esto evita que el frontend parezca roto cuando la medicion real no sirve para una simulacion demo.
 
 Tambien existen aliases clasificados:
 
@@ -484,6 +531,22 @@ Sin tocar la base legacy, la nueva BD debe guardar o sincronizar estos datos par
 - Operacion RAS: volumen, densidad, BOD5, ciclos de bomba y transferencia de oxigeno.
 - Vision: referencias de imagen/frame, calibracion de camara, especie y artefactos entrenados.
 - Model assets: pesos BPNN, LSTM y vision con version, fecha, metricas y estado activo.
+
+Tablas propias usadas por el backend para esta UI:
+
+- `farms`
+- `ponds`
+- `sensors`
+- `raw_measurements`
+- `clean_measurements`
+- `digital_twin_snapshots`
+- `model_outputs`
+- `actuators`
+- `actuation_commands`
+
+La tabla legacy `sismapiscis` no debe recibir escrituras desde este backend. La sincronizacion solo lee y copia hacia `aquaculture_digital_twin` con IDs `LEGACY-*`.
+
+`model_outputs` es la tabla de trazabilidad de ejecuciones. Cada `test-run`, `test-run-all` o ejecucion real guarda un `run_id`, `model_code`, salida JSON y fecha de creacion. La tabla de trazabilidad del frontend debe salir de ahi, no de memoria del navegador.
 
 ## Regla para que ningun formulario quede al aire
 

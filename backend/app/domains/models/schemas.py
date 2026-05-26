@@ -61,3 +61,22 @@ class ModelTestPayload(BaseModel):
     blocked_by: list[str] = Field(default_factory=list)
     test_mode: str
     notes: list[str] = Field(default_factory=list)
+
+
+class ModelTestRunItem(BaseModel):
+    model_code: str
+    status: str
+    readiness_status: str
+    run_id: str | None = None
+    auto_input_names: list[str] = Field(default_factory=list)
+    generated_input_names: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class ModelBatchTestRun(BaseModel):
+    pond_id: str | None = None
+    total: int
+    succeeded: int
+    failed: int
+    results: list[ModelTestRunItem]

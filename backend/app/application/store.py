@@ -298,6 +298,17 @@ class InMemoryBackendStore:
             self.model_outputs[run_id] = stored_output
             return stored_output
 
+    def list_model_outputs(
+        self,
+        model_code: str | None = None,
+        limit: int = 100,
+    ) -> list[ModelOutput]:
+        with self._lock:
+            outputs = list(self.model_outputs.values())
+        if model_code is not None:
+            outputs = [output for output in outputs if output.model_code == model_code]
+        return list(reversed(outputs[-limit:]))
+
     @staticmethod
     def _new_id(prefix: str) -> str:
         return f"{prefix}-{uuid4()}"
