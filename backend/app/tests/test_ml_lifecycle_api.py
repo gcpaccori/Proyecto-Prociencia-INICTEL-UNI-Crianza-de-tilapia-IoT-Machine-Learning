@@ -145,6 +145,12 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     assert active_asset.status_code == 200
     assert active_asset.json()["status"] == "active"
 
+    light_assets = client.get("/api/v1/ml/model-assets?status=active&include_payload=false")
+    assert light_assets.status_code == 200
+    assert light_assets.json()[0]["asset_id"] == train_payload["asset_id"]
+    assert "feature_names" in light_assets.json()[0]["artifact_payload"]
+    assert "estimator_b64" not in light_assets.json()[0]["artifact_payload"]
+
     metrics = client.get("/api/v1/models/ML_SUPERVISED_LINEAR_REG/metrics")
     assert metrics.status_code == 200
     assert metrics.json()["active_asset_id"] == train_payload["asset_id"]

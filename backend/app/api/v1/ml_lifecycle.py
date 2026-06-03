@@ -106,9 +106,23 @@ def cancel_training_job(
 def list_model_assets(
     model_code: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
+    include_payload: bool = Query(default=True),
     store: InMemoryBackendStore = Depends(get_store),
 ) -> list[ModelAssetRead]:
-    return store.list_model_assets(model_code=model_code, status=status_filter)
+    assets = store.list_model_assets(model_code=model_code, status=status_filter)
+    if include_payload:
+        return assets
+    return [_summarize_model_asset(asset) for asset in assets]
+
+
+def _summarize_model_asset(asset: ModelAssetRead) -> ModelAssetRead:
+    payload = asset.artifact_payload
+    public_payload = {
+        key: payload[key]
+        for key in ("task", "algorithm", "model_code", "feature_names", "estimator_name", "target_variable")
+        if key in payload
+    }
+    return asset.model_copy(update={"artifact_payload": public_payload})
 
 
 @router.get("/ml/model-assets/{asset_id}", response_model=ModelAssetRead)
