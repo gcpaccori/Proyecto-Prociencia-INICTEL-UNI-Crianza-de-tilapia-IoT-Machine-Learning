@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import pickle
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -609,7 +611,20 @@ class MLLifecycleService:
         if missing:
             raise ValueError(f"missing features: {', '.join(missing)}")
         row = [float(features[name]) for name in feature_names]
-        if algorithm == "linear_regression_baseline":
+        if algorithm == "sklearn_pickle":
+            estimator = pickle.loads(base64.b64decode(str(payload["estimator_b64"])))
+            raw_prediction = estimator.predict([row])[0]
+            task = str(payload.get("task", "regression"))
+            if task == "classification":
+                prediction = int(raw_prediction)
+            elif task == "cluster":
+                prediction = int(raw_prediction)
+            elif task == "projection":
+                transformed = estimator.transform([row])[0]
+                prediction = float(transformed[0])
+            else:
+                prediction = float(raw_prediction)
+        elif algorithm == "linear_regression_baseline":
             prediction: float | int | str = linear_regression_predict(
                 row,
                 payload.get("coefficients", []),
@@ -676,6 +691,18 @@ class MLLifecycleService:
         train_y = y[:train_count]
         eval_x = x[train_count:] or x
         eval_y = y[train_count:] or y
+        sklearn_artifact = self._train_sklearn_artifact(
+            model_code,
+            feature_names,
+            train_x,
+            train_y,
+            eval_x,
+            eval_y,
+            feature_set.target_variable,
+            hyperparameters,
+        )
+        if sklearn_artifact is not None:
+            return sklearn_artifact
         if "KMEANS" in model_code:
             k = int(hyperparameters.get("k", 3))
             initial_centroids = train_x[:k] if len(train_x) >= k else train_x
@@ -714,6 +741,157 @@ class MLLifecycleService:
             },
             {key: float(value) for key, value in metrics.items()},
         )
+
+    def _train_sklearn_artifact(
+        self,
+        model_code: str,
+        feature_names: list[str],
+        train_x: list[list[float]],
+        train_y: list[float],
+        eval_x: list[list[float]],
+        eval_y: list[float],
+        target_variable: str,
+        hyperparameters: dict[str, object],
+    ) -> tuple[dict[str, object], dict[str, float]] | None:
+        try:
+            from sklearn.cluster import KMeans
+            from sklearn.decomposition import PCA
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.linear_model import LinearRegression, LogisticRegression
+            from sklearn.metrics import accuracy_score
+            from sklearn.neighbors import KNeighborsRegressor
+            from sklearn.neural_network import MLPRegressor
+            from sklearn.svm import SVR
+            from sklearn.tree import DecisionTreeRegressor
+        except Exception:
+            return None
+
+        task = "regression"
+        estimator_name = model_code
+        if model_code == "ML_SUPERVISED_LINEAR_REG":
+            estimator = LinearRegression()
+        elif model_code == "ML_SUPERVISED_LOGISTIC_REG":
+            threshold = sorted(train_y)[len(train_y) // 2]
+            y_class = [int(value >= threshold) for value in train_y]
+            estimator = LogisticRegression(max_iter=int(hyperparameters.get("max_iter", 500)))
+            estimator.fit(train_x, y_class)
+            eval_class = [int(value >= threshold) for value in eval_y]
+            predictions = [int(value) for value in estimator.predict(eval_x)]
+            return self._sklearn_payload(
+                model_code=model_code,
+                estimator=estimator,
+                estimator_name="LogisticRegression",
+                feature_names=feature_names,
+                target_variable=target_variable,
+                task="classification",
+                metrics={"accuracy": float(accuracy_score(eval_class, predictions))},
+                extra={"classification_threshold": float(threshold)},
+            )
+        elif model_code == "ML_NONLINEAR_DECISION_TREE":
+            estimator = DecisionTreeRegressor(
+                max_depth=int(hyperparameters.get("max_depth", 6)),
+                random_state=42,
+            )
+        elif model_code == "ML_NONLINEAR_RANDOM_FOREST":
+            estimator = RandomForestRegressor(
+                n_estimators=int(hyperparameters.get("n_estimators", 80)),
+                max_depth=int(hyperparameters.get("max_depth", 8)),
+                random_state=42,
+                n_jobs=1,
+            )
+        elif model_code == "ML_NONLINEAR_SVM":
+            estimator = SVR(
+                C=float(hyperparameters.get("c", 1.0)),
+                epsilon=float(hyperparameters.get("epsilon", 0.01)),
+            )
+        elif model_code == "ML_NONSUPERVISED_KNN":
+            estimator = KNeighborsRegressor(
+                n_neighbors=int(hyperparameters.get("k", 5)),
+            )
+        elif model_code == "ML_UNSUPERVISED_KMEANS":
+            task = "cluster"
+            estimator = KMeans(
+                n_clusters=int(hyperparameters.get("k", 3)),
+                n_init=10,
+                random_state=42,
+            )
+            estimator.fit(train_x)
+            return self._sklearn_payload(
+                model_code=model_code,
+                estimator=estimator,
+                estimator_name="KMeans",
+                feature_names=feature_names,
+                target_variable=target_variable,
+                task=task,
+                metrics={"inertia": float(estimator.inertia_)},
+            )
+        elif model_code == "ML_UNSUPERVISED_PCA":
+            task = "projection"
+            estimator = PCA(n_components=min(2, len(feature_names)))
+            estimator.fit(train_x)
+            variance = [float(value) for value in estimator.explained_variance_ratio_]
+            return self._sklearn_payload(
+                model_code=model_code,
+                estimator=estimator,
+                estimator_name="PCA",
+                feature_names=feature_names,
+                target_variable=target_variable,
+                task=task,
+                metrics={
+                    "explained_variance_ratio_0": variance[0],
+                    "explained_variance_ratio_total": float(sum(variance)),
+                },
+            )
+        elif "LSTM" in model_code or "BPNN" in model_code:
+            estimator = MLPRegressor(
+                hidden_layer_sizes=tuple(
+                    int(value)
+                    for value in hyperparameters.get("hidden_layer_sizes", [32, 16])
+                ),
+                max_iter=int(hyperparameters.get("max_iter", 500)),
+                random_state=42,
+            )
+            estimator_name = "MLPRegressor"
+        else:
+            return None
+
+        estimator.fit(train_x, train_y)
+        predictions = [float(value) for value in estimator.predict(eval_x)]
+        metrics = regression_metrics(eval_y, predictions)
+        return self._sklearn_payload(
+            model_code=model_code,
+            estimator=estimator,
+            estimator_name=estimator_name,
+            feature_names=feature_names,
+            target_variable=target_variable,
+            task=task,
+            metrics={key: float(value) for key, value in metrics.items()},
+        )
+
+    @staticmethod
+    def _sklearn_payload(
+        *,
+        model_code: str,
+        estimator: object,
+        estimator_name: str,
+        feature_names: list[str],
+        target_variable: str,
+        task: str,
+        metrics: dict[str, float],
+        extra: dict[str, object] | None = None,
+    ) -> tuple[dict[str, object], dict[str, float]]:
+        payload = {
+            "algorithm": "sklearn_pickle",
+            "model_code": model_code,
+            "estimator_name": estimator_name,
+            "feature_names": feature_names,
+            "target_variable": target_variable,
+            "task": task,
+            "estimator_b64": base64.b64encode(pickle.dumps(estimator)).decode("ascii"),
+        }
+        if extra:
+            payload.update(extra)
+        return payload, metrics
 
     def _series(
         self,
