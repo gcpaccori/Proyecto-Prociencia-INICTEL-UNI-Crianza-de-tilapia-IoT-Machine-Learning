@@ -777,26 +777,28 @@ class MySQLBackendStore:
                 text("DELETE FROM cleaning_run_measurements WHERE run_id = :run_id"),
                 {"run_id": run_id},
             )
+            payloads = []
             for row in rows:
                 payload = self._dump_model(row)
                 payload["run_id"] = run_id
-                connection.execute(
-                    text(
-                        """
-                        INSERT INTO cleaning_run_measurements (
-                            run_id, row_id, raw_measurement_id, time, farm_id, pond_id,
-                            sensor_id, variable_code, clean_value, standard_unit,
-                            quality_flag, validation_status, cleaning_method, created_at
-                        )
-                        VALUES (
-                            :run_id, :id, :raw_measurement_id, :time, :farm_id, :pond_id,
-                            :sensor_id, :variable_code, :clean_value, :standard_unit,
-                            :quality_flag, :validation_status, :cleaning_method, :created_at
-                        )
-                        """
-                    ),
-                    payload,
-                )
+                payloads.append(payload)
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO cleaning_run_measurements (
+                        run_id, row_id, raw_measurement_id, time, farm_id, pond_id,
+                        sensor_id, variable_code, clean_value, standard_unit,
+                        quality_flag, validation_status, cleaning_method, created_at
+                    )
+                    VALUES (
+                        :run_id, :id, :raw_measurement_id, :time, :farm_id, :pond_id,
+                        :sensor_id, :variable_code, :clean_value, :standard_unit,
+                        :quality_flag, :validation_status, :cleaning_method, :created_at
+                    )
+                    """
+                ),
+                payloads,
+            )
         return rows
 
     def list_cleaning_run_measurements(
@@ -901,6 +903,7 @@ class MySQLBackendStore:
                 text("DELETE FROM feature_set_rows WHERE feature_set_id = :feature_set_id"),
                 {"feature_set_id": feature_set.feature_set_id},
             )
+            row_payloads = []
             for row in feature_set.rows:
                 row_index = int(row.get("row_index", 0))
                 split_name = "train"
@@ -908,6 +911,17 @@ class MySQLBackendStore:
                     split_name = "test"
                 elif row_index >= feature_set.train_rows:
                     split_name = "validation"
+                row_payloads.append(
+                    {
+                        "feature_set_id": feature_set.feature_set_id,
+                        "row_index": row_index,
+                        "split_name": split_name,
+                        "row_payload_json": json.dumps(row),
+                        "target_value": row.get("target"),
+                        "created_at": feature_set.created_at,
+                    }
+                )
+            if row_payloads:
                 connection.execute(
                     text(
                         """
@@ -921,14 +935,7 @@ class MySQLBackendStore:
                         )
                         """
                     ),
-                    {
-                        "feature_set_id": feature_set.feature_set_id,
-                        "row_index": row_index,
-                        "split_name": split_name,
-                        "row_payload_json": json.dumps(row),
-                        "target_value": row.get("target"),
-                        "created_at": feature_set.created_at,
-                    },
+                    row_payloads,
                 )
         return feature_set
 

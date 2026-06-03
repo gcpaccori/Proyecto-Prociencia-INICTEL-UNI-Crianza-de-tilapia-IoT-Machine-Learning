@@ -311,10 +311,11 @@ class MLLifecycleService:
         save_run_measurements = getattr(self.store, "save_cleaning_run_measurements", None)
         if callable(save_run_measurements):
             save_run_measurements(run_id, out_rows)
-        self.store.save_clean_measurements(
-            out_rows,
-            overwrite_ids=request.overwrite_clean_measurements,
-        )
+        if request.overwrite_clean_measurements or not callable(save_run_measurements):
+            self.store.save_clean_measurements(
+                out_rows,
+                overwrite_ids=request.overwrite_clean_measurements,
+            )
         steps.extend(
             [
                 CleaningRunStepRead(
