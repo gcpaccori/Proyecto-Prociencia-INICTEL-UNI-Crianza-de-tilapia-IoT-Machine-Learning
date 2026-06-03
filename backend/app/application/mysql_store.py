@@ -948,9 +948,19 @@ class MySQLBackendStore:
 
     def list_feature_sets(self) -> list[FeatureSetRead]:
         rows = self._fetch_all(
-            "SELECT payload_json FROM feature_sets ORDER BY created_at DESC"
+            "SELECT payload_json FROM feature_sets LIMIT 50"
         )
-        return [FeatureSetRead.model_validate_json(str(row["payload_json"])) for row in rows]
+        feature_sets = [
+            FeatureSetRead.model_validate_json(str(row["payload_json"])) for row in rows
+        ]
+        return [
+            feature_set.model_copy(update={"rows": []})
+            for feature_set in sorted(
+                feature_sets,
+                key=lambda item: item.created_at,
+                reverse=True,
+            )
+        ]
 
     def save_training_job(self, job: TrainingJobRead) -> TrainingJobRead:
         with self.engine.begin() as connection:
