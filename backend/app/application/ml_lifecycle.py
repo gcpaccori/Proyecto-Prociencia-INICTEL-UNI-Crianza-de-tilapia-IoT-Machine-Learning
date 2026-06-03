@@ -613,16 +613,17 @@ class MLLifecycleService:
         row = [float(features[name]) for name in feature_names]
         if algorithm == "sklearn_pickle":
             estimator = pickle.loads(base64.b64decode(str(payload["estimator_b64"])))
-            raw_prediction = estimator.predict([row])[0]
             task = str(payload.get("task", "regression"))
+            if task == "projection":
+                transformed = estimator.transform([row])[0]
+                prediction = float(transformed[0])
+            else:
+                raw_prediction = estimator.predict([row])[0]
             if task == "classification":
                 prediction = int(raw_prediction)
             elif task == "cluster":
                 prediction = int(raw_prediction)
-            elif task == "projection":
-                transformed = estimator.transform([row])[0]
-                prediction = float(transformed[0])
-            else:
+            elif task != "projection":
                 prediction = float(raw_prediction)
         elif algorithm == "linear_regression_baseline":
             prediction: float | int | str = linear_regression_predict(
