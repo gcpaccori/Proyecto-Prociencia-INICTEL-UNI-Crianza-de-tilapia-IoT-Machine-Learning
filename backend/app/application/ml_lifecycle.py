@@ -308,6 +308,9 @@ class MLLifecycleService:
                     )
                 )
 
+        save_run_measurements = getattr(self.store, "save_cleaning_run_measurements", None)
+        if callable(save_run_measurements):
+            save_run_measurements(run_id, out_rows)
         self.store.save_clean_measurements(
             out_rows,
             overwrite_ids=request.overwrite_clean_measurements,
@@ -356,8 +359,12 @@ class MLLifecycleService:
         run = self.store.get_cleaning_run(run_id)
         if run is None:
             raise ValueError("cleaning run not found")
-        rows = self.store.list_clean_measurements(pond_id=run.pond_id, limit=100000)
-        rows = [row for row in rows if row.id.startswith(f"{run_id}-")]
+        list_run_measurements = getattr(self.store, "list_cleaning_run_measurements", None)
+        if callable(list_run_measurements):
+            rows = list_run_measurements(run_id, pond_id=run.pond_id, limit=100000)
+        else:
+            rows = self.store.list_clean_measurements(pond_id=run.pond_id, limit=100000)
+            rows = [row for row in rows if row.id.startswith(f"{run_id}-")]
         return {
             "run_id": run_id,
             "records": len(rows),
@@ -368,7 +375,7 @@ class MLLifecycleService:
         if request.target_variable in request.feature_variables:
             raise ValueError("target_variable must not be repeated in feature_variables")
         series_by_variable = {
-            variable: self._series(request.pond_id, variable)
+            variable: self._series(request.pond_id, variable, request.cleaning_run_id)
             for variable in [*request.feature_variables, request.target_variable]
         }
         missing = [
@@ -622,6 +629,14 @@ class MLLifecycleService:
             prediction = min(range(len(distances)), key=lambda index: distances[index])
         else:
             raise ValueError(f"unsupported artifact algorithm: {algorithm}")
+        prediction_id = None
+        save_prediction = getattr(self.store, "save_model_asset_prediction", None)
+        if callable(save_prediction):
+            prediction_id = save_prediction(
+                asset=asset,
+                features=features,
+                prediction=prediction,
+            )
         return ModelAssetPredictionRead(
             model_code=asset.model_code,
             asset_id=asset.asset_id,
@@ -633,6 +648,7 @@ class MLLifecycleService:
                 "feature_set_id": asset.feature_set_id,
                 "training_job_id": asset.training_job_id,
                 "artifact_status": asset.status,
+                "prediction_id": prediction_id,
             },
         )
 
@@ -698,12 +714,28 @@ class MLLifecycleService:
             {key: float(value) for key, value in metrics.items()},
         )
 
-    def _series(self, pond_id: str, variable_code: str) -> list[float]:
-        rows = self.store.list_clean_measurements(
-            pond_id=pond_id,
-            variable_code=variable_code,
-            limit=100000,
-        )
+    def _series(
+        self,
+        pond_id: str,
+        variable_code: str,
+        cleaning_run_id: str | None = None,
+    ) -> list[float]:
+        rows = []
+        if cleaning_run_id is not None:
+            list_run_measurements = getattr(self.store, "list_cleaning_run_measurements", None)
+            if callable(list_run_measurements):
+                rows = list_run_measurements(
+                    cleaning_run_id,
+                    pond_id=pond_id,
+                    variable_code=variable_code,
+                    limit=100000,
+                )
+        if not rows:
+            rows = self.store.list_clean_measurements(
+                pond_id=pond_id,
+                variable_code=variable_code,
+                limit=100000,
+            )
         return [float(row.clean_value) for row in sorted(rows, key=lambda item: item.time)]
 
     def _event(

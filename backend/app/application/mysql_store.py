@@ -765,6 +765,71 @@ class MySQLBackendStore:
                 connection.execute(text(statement), payload)
         return rows
 
+    def save_cleaning_run_measurements(
+        self,
+        run_id: str,
+        rows: list[CleanMeasurementRead],
+    ) -> list[CleanMeasurementRead]:
+        if not rows:
+            return rows
+        with self.engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM cleaning_run_measurements WHERE run_id = :run_id"),
+                {"run_id": run_id},
+            )
+            for row in rows:
+                payload = self._dump_model(row)
+                payload["run_id"] = run_id
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO cleaning_run_measurements (
+                            run_id, row_id, raw_measurement_id, time, farm_id, pond_id,
+                            sensor_id, variable_code, clean_value, standard_unit,
+                            quality_flag, validation_status, cleaning_method, created_at
+                        )
+                        VALUES (
+                            :run_id, :id, :raw_measurement_id, :time, :farm_id, :pond_id,
+                            :sensor_id, :variable_code, :clean_value, :standard_unit,
+                            :quality_flag, :validation_status, :cleaning_method, :created_at
+                        )
+                        """
+                    ),
+                    payload,
+                )
+        return rows
+
+    def list_cleaning_run_measurements(
+        self,
+        run_id: str,
+        pond_id: str | None = None,
+        variable_code: str | None = None,
+        limit: int = 100,
+    ) -> list[CleanMeasurementRead]:
+        clauses = ["run_id = :run_id"]
+        params: dict[str, Any] = {"run_id": run_id, "limit": limit}
+        if pond_id is not None:
+            clauses.append("pond_id = :pond_id")
+            params["pond_id"] = pond_id
+        if variable_code is not None:
+            clauses.append("variable_code = :variable_code")
+            params["variable_code"] = variable_code
+        where = f"WHERE {' AND '.join(clauses)}"
+        rows = self._fetch_all(
+            f"""
+            SELECT
+                row_id AS id, raw_measurement_id, time, farm_id, pond_id, sensor_id,
+                variable_code, clean_value, standard_unit, quality_flag,
+                validation_status, cleaning_method, created_at
+            FROM cleaning_run_measurements
+            {where}
+            ORDER BY time DESC
+            LIMIT :limit
+            """,
+            params,
+        )
+        return [self._clean_from_row(row) for row in rows]
+
     def save_cleaning_run(self, cleaning_run: CleaningRunRead) -> CleaningRunRead:
         with self.engine.begin() as connection:
             connection.execute(
@@ -832,6 +897,39 @@ class MySQLBackendStore:
                     "created_at": feature_set.created_at,
                 },
             )
+            connection.execute(
+                text("DELETE FROM feature_set_rows WHERE feature_set_id = :feature_set_id"),
+                {"feature_set_id": feature_set.feature_set_id},
+            )
+            for row in feature_set.rows:
+                row_index = int(row.get("row_index", 0))
+                split_name = "train"
+                if row_index >= feature_set.train_rows + feature_set.validation_rows:
+                    split_name = "test"
+                elif row_index >= feature_set.train_rows:
+                    split_name = "validation"
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO feature_set_rows (
+                            feature_set_id, row_index, split_name, row_payload_json,
+                            target_value, created_at
+                        )
+                        VALUES (
+                            :feature_set_id, :row_index, :split_name, :row_payload_json,
+                            :target_value, :created_at
+                        )
+                        """
+                    ),
+                    {
+                        "feature_set_id": feature_set.feature_set_id,
+                        "row_index": row_index,
+                        "split_name": split_name,
+                        "row_payload_json": json.dumps(row),
+                        "target_value": row.get("target"),
+                        "created_at": feature_set.created_at,
+                    },
+                )
         return feature_set
 
     def get_feature_set(self, feature_set_id: str) -> FeatureSetRead | None:
@@ -1026,6 +1124,45 @@ class MySQLBackendStore:
             update={"status": "deprecated", "deprecated_at": self._now()}
         )
         return self.save_model_asset(deprecated)
+
+    def save_model_asset_prediction(
+        self,
+        *,
+        asset: ModelAssetRead,
+        features: dict[str, float],
+        prediction: float | int | str,
+        status: str = "completed",
+    ) -> str:
+        prediction_id = self._new_id("PRED")
+        created_at = self._now()
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO model_asset_predictions (
+                        prediction_id, asset_id, model_code, version, feature_set_id,
+                        training_job_id, input_json, prediction_json, status, created_at
+                    )
+                    VALUES (
+                        :prediction_id, :asset_id, :model_code, :version, :feature_set_id,
+                        :training_job_id, :input_json, :prediction_json, :status, :created_at
+                    )
+                    """
+                ),
+                {
+                    "prediction_id": prediction_id,
+                    "asset_id": asset.asset_id,
+                    "model_code": asset.model_code,
+                    "version": asset.version,
+                    "feature_set_id": asset.feature_set_id,
+                    "training_job_id": asset.training_job_id,
+                    "input_json": json.dumps(features),
+                    "prediction_json": json.dumps({"prediction": prediction}),
+                    "status": status,
+                    "created_at": created_at,
+                },
+            )
+        return prediction_id
 
     def _list_snapshots(self, pond_id: str | None = None) -> list[DigitalTwinSnapshot]:
         if pond_id is None:
@@ -1343,6 +1480,27 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS cleaning_run_measurements (
+        run_id VARCHAR(160) NOT NULL,
+        row_id VARCHAR(255) NOT NULL,
+        raw_measurement_id VARCHAR(160) NOT NULL,
+        time DATETIME NOT NULL,
+        farm_id VARCHAR(128) NOT NULL,
+        pond_id VARCHAR(128),
+        sensor_id VARCHAR(128),
+        variable_code VARCHAR(128) NOT NULL,
+        clean_value DOUBLE NOT NULL,
+        standard_unit VARCHAR(64) NOT NULL,
+        quality_flag VARCHAR(64) NOT NULL,
+        validation_status VARCHAR(64) NOT NULL,
+        cleaning_method VARCHAR(128),
+        created_at DATETIME NOT NULL,
+        PRIMARY KEY (run_id, row_id),
+        INDEX ix_cleaning_run_measurements_run_var_time (run_id, variable_code, time),
+        INDEX ix_cleaning_run_measurements_pond_time (pond_id, time)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS feature_sets (
         feature_set_id VARCHAR(160) PRIMARY KEY,
         pond_id VARCHAR(128) NOT NULL,
@@ -1351,6 +1509,18 @@ SCHEMA_STATEMENTS = [
         status VARCHAR(64) NOT NULL,
         created_at DATETIME NOT NULL,
         INDEX ix_feature_sets_pond_time (pond_id, created_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS feature_set_rows (
+        feature_set_id VARCHAR(160) NOT NULL,
+        row_index INT NOT NULL,
+        split_name VARCHAR(32) NOT NULL,
+        row_payload_json JSON NOT NULL,
+        target_value DOUBLE,
+        created_at DATETIME NOT NULL,
+        PRIMARY KEY (feature_set_id, row_index),
+        INDEX ix_feature_set_rows_split (feature_set_id, split_name)
     )
     """,
     """
@@ -1389,6 +1559,22 @@ SCHEMA_STATEMENTS = [
         deprecated_at DATETIME,
         INDEX ix_model_assets_model_status (model_code, status),
         INDEX ix_model_assets_created_at (created_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_asset_predictions (
+        prediction_id VARCHAR(160) PRIMARY KEY,
+        asset_id VARCHAR(160) NOT NULL,
+        model_code VARCHAR(128) NOT NULL,
+        version VARCHAR(64) NOT NULL,
+        feature_set_id VARCHAR(160) NOT NULL,
+        training_job_id VARCHAR(160) NOT NULL,
+        input_json JSON NOT NULL,
+        prediction_json JSON NOT NULL,
+        status VARCHAR(64) NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX ix_model_asset_predictions_model_time (model_code, created_at),
+        INDEX ix_model_asset_predictions_asset_time (asset_id, created_at)
     )
     """,
     """
