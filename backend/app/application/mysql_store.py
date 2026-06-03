@@ -1103,10 +1103,13 @@ class MySQLBackendStore:
             params["status"] = status
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._fetch_all(
-            f"SELECT payload_json FROM model_assets {where} ORDER BY created_at DESC",
+            f"SELECT payload_json FROM model_assets {where} LIMIT 100",
             params,
         )
-        return [ModelAssetRead.model_validate_json(str(row["payload_json"])) for row in rows]
+        assets = [
+            ModelAssetRead.model_validate_json(str(row["payload_json"])) for row in rows
+        ]
+        return sorted(assets, key=lambda item: item.created_at, reverse=True)
 
     def active_model_asset(self, model_code: str) -> ModelAssetRead | None:
         assets = self.list_model_assets(model_code=model_code, status="active")
