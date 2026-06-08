@@ -604,6 +604,7 @@ class MLLifecycleService:
         summarized_feature_set = (
             self._summarize_feature_set(feature_set) if feature_set else None
         )
+        summarized_asset = self._summarize_asset(active_asset) if active_asset else None
         predictions = self._list_prediction_history(
             model_code=model_code,
             asset_id=active_asset.asset_id if active_asset else None,
@@ -614,7 +615,7 @@ class MLLifecycleService:
             model_code=model_code,
             pond_id=pond_id,
             readiness=readiness,
-            active_asset=active_asset,
+            active_asset=summarized_asset,
             latest_training_job=latest_job,
             feature_set=summarized_feature_set,
             recent_predictions=predictions,
@@ -622,7 +623,7 @@ class MLLifecycleService:
                 readiness=readiness,
                 feature_set=summarized_feature_set,
                 job=latest_job,
-                asset=active_asset,
+                asset=summarized_asset,
                 metrics=metrics,
                 predictions=predictions,
             ),
@@ -643,7 +644,7 @@ class MLLifecycleService:
             else None
         )
         return {
-            "asset": asset.model_dump(mode="json"),
+            "asset": self._summarize_asset(asset).model_dump(mode="json"),
             "training_job": job.model_dump(mode="json") if job else None,
             "training_events": [event.model_dump(mode="json") for event in events],
             "feature_set": (
@@ -851,6 +852,23 @@ class MLLifecycleService:
     @staticmethod
     def _summarize_feature_set(feature_set: FeatureSetRead) -> FeatureSetRead:
         return feature_set.model_copy(update={"rows": []})
+
+    @staticmethod
+    def _summarize_asset(asset: ModelAssetRead) -> ModelAssetRead:
+        payload = asset.artifact_payload
+        public_payload = {
+            key: payload[key]
+            for key in (
+                "algorithm",
+                "estimator_name",
+                "feature_names",
+                "model_code",
+                "target_variable",
+                "task",
+            )
+            if key in payload
+        }
+        return asset.model_copy(update={"artifact_payload": public_payload})
 
     @staticmethod
     def _lifecycle_steps(

@@ -186,6 +186,9 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     lifecycle_payload = model_lifecycle.json()
     assert lifecycle_payload["readiness"]["can_train"] is True
     assert lifecycle_payload["active_asset"]["asset_id"] == train_payload["asset_id"]
+    assert "feature_names" in lifecycle_payload["active_asset"]["artifact_payload"]
+    assert "estimator_b64" not in lifecycle_payload["active_asset"]["artifact_payload"]
+    assert lifecycle_payload["feature_set"]["rows"] == []
     assert lifecycle_payload["recent_predictions"][0]["prediction_id"] == prediction_id
     assert {step["step"] for step in lifecycle_payload["steps"]} == {
         "data",
@@ -203,8 +206,10 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     assert lineage.status_code == 200
     lineage_payload = lineage.json()
     assert lineage_payload["asset"]["asset_id"] == train_payload["asset_id"]
+    assert "estimator_b64" not in lineage_payload["asset"]["artifact_payload"]
     assert lineage_payload["training_job"]["job_id"] == train_payload["job_id"]
     assert lineage_payload["feature_set"]["feature_set_id"] == feature_set_id
+    assert lineage_payload["feature_set"]["rows"] == []
     assert lineage_payload["cleaning_run"]["run_id"] == run_id
 
     lifecycle = client.get("/api/v1/ml/lifecycle/status")
