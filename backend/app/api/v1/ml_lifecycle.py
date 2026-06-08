@@ -6,8 +6,10 @@ from backend.app.application.ml_lifecycle import MLLifecycleService
 from backend.app.domains.ml_lifecycle import (
     MLLifecycleStatus,
     ModelAssetPredictionRead,
+    ModelAssetPredictionHistoryRead,
     ModelAssetPredictionRequest,
     ModelAssetRead,
+    ModelLifecycleDetailRead,
     TrainableModelRead,
     TrainingJobEventRead,
     TrainingJobRead,
@@ -88,6 +90,15 @@ def list_training_job_events(
     return store.list_training_job_events(job_id)
 
 
+@router.get("/ml/models/{model_code}/lifecycle", response_model=ModelLifecycleDetailRead)
+def get_model_lifecycle_detail(
+    model_code: str,
+    pond_id: str | None = Query(default=None),
+    store: InMemoryBackendStore = Depends(get_store),
+) -> ModelLifecycleDetailRead:
+    return _service(store).model_lifecycle_detail(model_code=model_code, pond_id=pond_id)
+
+
 @router.post("/ml/training-jobs/{job_id}/cancel", response_model=TrainingJobRead)
 def cancel_training_job(
     job_id: str,
@@ -134,6 +145,31 @@ def get_model_asset(
     if asset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="model asset not found")
     return asset
+
+
+@router.get("/ml/model-assets/{asset_id}/lineage")
+def get_model_asset_lineage(
+    asset_id: str,
+    store: InMemoryBackendStore = Depends(get_store),
+) -> dict[str, object]:
+    try:
+        return _service(store).model_asset_lineage(asset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/ml/predictions", response_model=list[ModelAssetPredictionHistoryRead])
+def list_model_predictions(
+    model_code: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=100),
+    store: InMemoryBackendStore = Depends(get_store),
+) -> list[ModelAssetPredictionHistoryRead]:
+    return _service(store).prediction_history(
+        model_code=model_code,
+        asset_id=asset_id,
+        limit=limit,
+    )
 
 
 @router.post("/ml/model-assets/{asset_id}/activate", response_model=ModelAssetRead)

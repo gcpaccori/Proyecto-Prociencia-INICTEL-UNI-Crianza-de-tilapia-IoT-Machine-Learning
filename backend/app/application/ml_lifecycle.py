@@ -20,7 +20,9 @@ from backend.app.domains.ml_lifecycle import (
     FeatureSetPreview,
     FeatureSetRead,
     MLLifecycleStatus,
+    ModelLifecycleDetailRead,
     ModelAssetPredictionRead,
+    ModelAssetPredictionHistoryRead,
     ModelAssetRead,
     TrainableModelRead,
     TrainingJobEventRead,
@@ -578,6 +580,95 @@ class MLLifecycleService:
             )
         return models
 
+    def model_lifecycle_detail(
+        self,
+        model_code: str,
+        pond_id: str | None = None,
+    ) -> ModelLifecycleDetailRead:
+        readiness = self.readiness(model_code=model_code, pond_id=pond_id)
+        active_asset = self.store.active_model_asset(model_code)
+        jobs = [
+            job
+            for job in self.store.list_training_jobs()
+            if job.model_code == model_code
+        ]
+        latest_job = jobs[0] if jobs else None
+        feature_set_id = (
+            active_asset.feature_set_id
+            if active_asset
+            else latest_job.feature_set_id
+            if latest_job
+            else None
+        )
+        feature_set = self.store.get_feature_set(feature_set_id) if feature_set_id else None
+        summarized_feature_set = (
+            self._summarize_feature_set(feature_set) if feature_set else None
+        )
+        predictions = self._list_prediction_history(
+            model_code=model_code,
+            asset_id=active_asset.asset_id if active_asset else None,
+            limit=10,
+        )
+        metrics = active_asset.metrics_json if active_asset else latest_job.metrics if latest_job else {}
+        return ModelLifecycleDetailRead(
+            model_code=model_code,
+            pond_id=pond_id,
+            readiness=readiness,
+            active_asset=active_asset,
+            latest_training_job=latest_job,
+            feature_set=summarized_feature_set,
+            recent_predictions=predictions,
+            steps=self._lifecycle_steps(
+                readiness=readiness,
+                feature_set=summarized_feature_set,
+                job=latest_job,
+                asset=active_asset,
+                metrics=metrics,
+                predictions=predictions,
+            ),
+            recommendation=self._model_recommendation(metrics, active_asset),
+        )
+
+    def model_asset_lineage(self, asset_id: str) -> dict[str, object]:
+        asset = self.store.get_model_asset(asset_id)
+        if asset is None:
+            raise ValueError("model asset not found")
+        job = self.store.get_training_job(asset.training_job_id)
+        feature_set = self.store.get_feature_set(asset.feature_set_id)
+        events = self.store.list_training_job_events(asset.training_job_id)
+        predictions = self._list_prediction_history(asset_id=asset_id, limit=25)
+        cleaning_run = (
+            self.store.get_cleaning_run(feature_set.cleaning_run_id)
+            if feature_set and feature_set.cleaning_run_id
+            else None
+        )
+        return {
+            "asset": asset.model_dump(mode="json"),
+            "training_job": job.model_dump(mode="json") if job else None,
+            "training_events": [event.model_dump(mode="json") for event in events],
+            "feature_set": (
+                self._summarize_feature_set(feature_set).model_dump(mode="json")
+                if feature_set
+                else None
+            ),
+            "cleaning_run": cleaning_run.model_dump(mode="json") if cleaning_run else None,
+            "recent_predictions": [
+                prediction.model_dump(mode="json") for prediction in predictions
+            ],
+        }
+
+    def prediction_history(
+        self,
+        model_code: str | None = None,
+        asset_id: str | None = None,
+        limit: int = 25,
+    ) -> list[ModelAssetPredictionHistoryRead]:
+        return self._list_prediction_history(
+            model_code=model_code,
+            asset_id=asset_id,
+            limit=limit,
+        )
+
     def lifecycle_status(self) -> MLLifecycleStatus:
         assets = self.store.list_model_assets()
         return MLLifecycleStatus(
@@ -596,6 +687,9 @@ class MLLifecycleService:
                 "features": "/features/build",
                 "training": "/ml/training-jobs",
                 "assets": "/ml/model-assets",
+                "model_lifecycle": "/ml/models/{model_code}/lifecycle",
+                "asset_lineage": "/ml/model-assets/{asset_id}/lineage",
+                "predictions": "/ml/predictions",
             },
         )
 
@@ -742,6 +836,91 @@ class MLLifecycleService:
             },
             {key: float(value) for key, value in metrics.items()},
         )
+
+    def _list_prediction_history(
+        self,
+        model_code: str | None = None,
+        asset_id: str | None = None,
+        limit: int = 25,
+    ) -> list[ModelAssetPredictionHistoryRead]:
+        list_predictions = getattr(self.store, "list_model_asset_predictions", None)
+        if callable(list_predictions):
+            return list_predictions(model_code=model_code, asset_id=asset_id, limit=limit)
+        return []
+
+    @staticmethod
+    def _summarize_feature_set(feature_set: FeatureSetRead) -> FeatureSetRead:
+        return feature_set.model_copy(update={"rows": []})
+
+    @staticmethod
+    def _lifecycle_steps(
+        *,
+        readiness: DatasetReadiness,
+        feature_set: FeatureSetRead | None,
+        job: TrainingJobRead | None,
+        asset: ModelAssetRead | None,
+        metrics: dict[str, float],
+        predictions: list[ModelAssetPredictionHistoryRead],
+    ) -> list[dict[str, object]]:
+        r2 = metrics.get("r2")
+        if not metrics:
+            validation_status = "pending"
+        elif r2 is not None and r2 < 0:
+            validation_status = "warning"
+        else:
+            validation_status = "ready"
+        return [
+            {
+                "step": "data",
+                "status": "ready" if readiness.can_train else "warning",
+                "detail": "dataset_ready" if readiness.can_train else "dataset_missing",
+                "missing_variables": readiness.missing_variables,
+            },
+            {
+                "step": "cleaning",
+                "status": "ready",
+                "detail": "cleaning_run_measurements versionadas disponibles",
+            },
+            {
+                "step": "features",
+                "status": "ready" if feature_set else "pending",
+                "detail": feature_set.feature_set_id if feature_set else "feature_set pendiente",
+            },
+            {
+                "step": "training",
+                "status": job.status if job else "pending",
+                "detail": job.job_id if job else "training_job pendiente",
+            },
+            {
+                "step": "validation",
+                "status": validation_status,
+                "detail": metrics,
+            },
+            {
+                "step": "artifact",
+                "status": asset.status if asset else "pending",
+                "detail": asset.asset_id if asset else "asset pendiente",
+            },
+            {
+                "step": "inference",
+                "status": "ready" if predictions else "pending",
+                "detail": {"recent_predictions": len(predictions)},
+            },
+        ]
+
+    @staticmethod
+    def _model_recommendation(
+        metrics: dict[str, float],
+        asset: ModelAssetRead | None,
+    ) -> str:
+        if asset is None:
+            return "Entrenar candidato antes de usar en produccion."
+        r2 = metrics.get("r2")
+        if r2 is not None and r2 < 0:
+            return "Modelo experimental: no promover sin nuevo entrenamiento o revision de datos."
+        if not metrics:
+            return "Artefacto activo sin metricas suficientes; validar antes de decision operativa."
+        return "Modelo disponible para inferencia asistida con trazabilidad."
 
     def _train_sklearn_artifact(
         self,

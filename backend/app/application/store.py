@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from datetime import datetime, timezone
 from threading import RLock
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from backend.app.domains.ml_lifecycle import (
     CleaningRunRead,
     FeatureSetRead,
     ModelAssetRead,
+    ModelAssetPredictionHistoryRead,
     TrainingJobEventRead,
     TrainingJobRead,
 )
@@ -49,6 +51,7 @@ class InMemoryBackendStore:
         self.training_jobs: dict[str, TrainingJobRead] = {}
         self.training_job_events: dict[str, list[TrainingJobEventRead]] = {}
         self.model_assets: dict[str, ModelAssetRead] = {}
+        self.model_asset_predictions: dict[str, ModelAssetPredictionHistoryRead] = {}
 
     def create_farm(self, payload: FarmCreate) -> FarmRead:
         with self._lock:
@@ -451,6 +454,45 @@ class InMemoryBackendStore:
             )
             self.model_assets[asset_id] = deprecated
             return deprecated
+
+    def save_model_asset_prediction(
+        self,
+        *,
+        asset: ModelAssetRead,
+        features: dict[str, float],
+        prediction: float | int | str,
+        status: str = "completed",
+    ) -> str:
+        prediction_id = self._new_id("PRED")
+        record = ModelAssetPredictionHistoryRead(
+            prediction_id=prediction_id,
+            asset_id=asset.asset_id,
+            model_code=asset.model_code,
+            version=asset.version,
+            feature_set_id=asset.feature_set_id,
+            training_job_id=asset.training_job_id,
+            features=features,
+            prediction=prediction,
+            status=status,
+            created_at=self._now(),
+        )
+        with self._lock:
+            self.model_asset_predictions[prediction_id] = record
+        return prediction_id
+
+    def list_model_asset_predictions(
+        self,
+        model_code: str | None = None,
+        asset_id: str | None = None,
+        limit: int = 25,
+    ) -> list[ModelAssetPredictionHistoryRead]:
+        with self._lock:
+            records = list(self.model_asset_predictions.values())
+        if model_code is not None:
+            records = [record for record in records if record.model_code == model_code]
+        if asset_id is not None:
+            records = [record for record in records if record.asset_id == asset_id]
+        return sorted(records, key=lambda record: record.created_at, reverse=True)[:limit]
 
     @staticmethod
     def _new_id(prefix: str) -> str:

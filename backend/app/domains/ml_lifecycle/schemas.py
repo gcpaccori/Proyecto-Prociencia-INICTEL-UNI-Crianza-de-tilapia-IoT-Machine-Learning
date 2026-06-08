@@ -188,6 +188,31 @@ class ModelAssetPredictionRead(BaseModel):
     traceability: dict[str, object] = Field(default_factory=dict)
 
 
+class ModelAssetPredictionHistoryRead(BaseModel):
+    prediction_id: str
+    asset_id: str
+    model_code: str
+    version: str
+    feature_set_id: str
+    training_job_id: str
+    features: dict[str, float]
+    prediction: float | int | str
+    status: str = "completed"
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ModelLifecycleDetailRead(BaseModel):
+    model_code: str
+    pond_id: str | None = None
+    readiness: DatasetReadiness
+    active_asset: ModelAssetRead | None = None
+    latest_training_job: TrainingJobRead | None = None
+    feature_set: FeatureSetRead | None = None
+    recent_predictions: list[ModelAssetPredictionHistoryRead] = Field(default_factory=list)
+    steps: list[dict[str, object]] = Field(default_factory=list)
+    recommendation: str
+
+
 class TrainableModelRead(BaseModel):
     model_code: str
     name: str

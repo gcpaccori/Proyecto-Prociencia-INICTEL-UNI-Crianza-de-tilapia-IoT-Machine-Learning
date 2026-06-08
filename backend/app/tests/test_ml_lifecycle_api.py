@@ -168,11 +168,50 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     assert prediction.status_code == 200
     assert prediction.json()["asset_id"] == train_payload["asset_id"]
     assert prediction.json()["traceability"]["feature_set_id"] == feature_set_id
+    prediction_id = prediction.json()["traceability"]["prediction_id"]
+    assert prediction_id is not None
+
+    prediction_history = client.get(
+        "/api/v1/ml/predictions",
+        params={"model_code": "ML_SUPERVISED_LINEAR_REG"},
+    )
+    assert prediction_history.status_code == 200
+    assert prediction_history.json()[0]["prediction_id"] == prediction_id
+
+    model_lifecycle = client.get(
+        "/api/v1/ml/models/ML_SUPERVISED_LINEAR_REG/lifecycle",
+        params={"pond_id": pond_id},
+    )
+    assert model_lifecycle.status_code == 200
+    lifecycle_payload = model_lifecycle.json()
+    assert lifecycle_payload["readiness"]["can_train"] is True
+    assert lifecycle_payload["active_asset"]["asset_id"] == train_payload["asset_id"]
+    assert lifecycle_payload["recent_predictions"][0]["prediction_id"] == prediction_id
+    assert {step["step"] for step in lifecycle_payload["steps"]} == {
+        "data",
+        "cleaning",
+        "features",
+        "training",
+        "validation",
+        "artifact",
+        "inference",
+    }
+
+    lineage = client.get(
+        f"/api/v1/ml/model-assets/{train_payload['asset_id']}/lineage"
+    )
+    assert lineage.status_code == 200
+    lineage_payload = lineage.json()
+    assert lineage_payload["asset"]["asset_id"] == train_payload["asset_id"]
+    assert lineage_payload["training_job"]["job_id"] == train_payload["job_id"]
+    assert lineage_payload["feature_set"]["feature_set_id"] == feature_set_id
+    assert lineage_payload["cleaning_run"]["run_id"] == run_id
 
     lifecycle = client.get("/api/v1/ml/lifecycle/status")
     assert lifecycle.status_code == 200
     assert lifecycle.json()["training_enabled"] is True
     assert lifecycle.json()["active_model_assets"] == 1
+    assert lifecycle.json()["routes"]["model_lifecycle"] == "/ml/models/{model_code}/lifecycle"
 
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/v1/datasets/coverage" in paths
@@ -181,3 +220,6 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     assert "/api/v1/ml/training-jobs" in paths
     assert "/api/v1/ml/model-assets/{asset_id}/activate" in paths
     assert "/api/v1/models/{model_code}/predict" in paths
+    assert "/api/v1/ml/models/{model_code}/lifecycle" in paths
+    assert "/api/v1/ml/model-assets/{asset_id}/lineage" in paths
+    assert "/api/v1/ml/predictions" in paths

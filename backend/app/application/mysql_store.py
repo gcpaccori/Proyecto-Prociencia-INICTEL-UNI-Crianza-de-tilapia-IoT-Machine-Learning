@@ -32,6 +32,7 @@ from backend.app.domains.ml_lifecycle import (
     CleaningRunRead,
     FeatureSetRead,
     ModelAssetRead,
+    ModelAssetPredictionHistoryRead,
     TrainingJobEventRead,
     TrainingJobRead,
 )
@@ -1184,6 +1185,34 @@ class MySQLBackendStore:
             )
         return prediction_id
 
+    def list_model_asset_predictions(
+        self,
+        model_code: str | None = None,
+        asset_id: str | None = None,
+        limit: int = 25,
+    ) -> list[ModelAssetPredictionHistoryRead]:
+        clauses: list[str] = []
+        params: dict[str, Any] = {"limit": limit}
+        if model_code is not None:
+            clauses.append("model_code = :model_code")
+            params["model_code"] = model_code
+        if asset_id is not None:
+            clauses.append("asset_id = :asset_id")
+            params["asset_id"] = asset_id
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._fetch_all(
+            f"""
+            SELECT prediction_id, asset_id, model_code, version, feature_set_id,
+                   training_job_id, input_json, prediction_json, status, created_at
+            FROM model_asset_predictions
+            {where}
+            ORDER BY created_at DESC
+            LIMIT :limit
+            """,
+            params,
+        )
+        return [self._prediction_from_row(row) for row in rows]
+
     def _list_snapshots(self, pond_id: str | None = None) -> list[DigitalTwinSnapshot]:
         if pond_id is None:
             rows = self._fetch_all(
@@ -1326,6 +1355,21 @@ class MySQLBackendStore:
             quality_flag=row["quality_flag"],
             validation_status=row["validation_status"],
             cleaning_method=row["cleaning_method"],
+            created_at=row["created_at"],
+        )
+
+    def _prediction_from_row(self, row: dict[str, Any]) -> ModelAssetPredictionHistoryRead:
+        prediction_payload = self._json(row["prediction_json"])
+        return ModelAssetPredictionHistoryRead(
+            prediction_id=row["prediction_id"],
+            asset_id=row["asset_id"],
+            model_code=row["model_code"],
+            version=row["version"],
+            feature_set_id=row["feature_set_id"],
+            training_job_id=row["training_job_id"],
+            features={key: float(value) for key, value in self._json(row["input_json"]).items()},
+            prediction=prediction_payload.get("prediction"),
+            status=row["status"],
             created_at=row["created_at"],
         )
 
