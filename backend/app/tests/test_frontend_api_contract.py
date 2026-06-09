@@ -65,6 +65,24 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
     assert snapshot_payload["recommendations"]
     assert snapshot_payload["alerts"]
 
+    projection_response = client.post(
+        f"/api/v1/digital-twin/{pond_id}/projection",
+        json={
+            "horizon_hours": 12,
+            "step_hours": 3,
+            "selected_models": ["DO_DYNAMIC_0D_ROYER_2021"],
+            "variable_adjustments_per_hour": {"water_temperature_c": 0.1},
+        },
+    )
+    assert projection_response.status_code == 200
+    projection = projection_response.json()
+    assert projection["pond_id"] == pond_id
+    assert [point["hour"] for point in projection["points"]] == [0, 3, 6, 9, 12]
+    assert projection["baseline_values"]["water_temperature_c"] == 18.4
+    assert projection["scenario_adjustments_per_hour"]["water_temperature_c"] == 0.1
+    assert projection["traceability"]["generated_data_used"] is False
+    assert projection["model_participation"][0]["model_code"] == "DO_DYNAMIC_0D_ROYER_2021"
+
     alerts_response = client.get("/api/v1/alerts", params={"pond_id": pond_id})
     assert alerts_response.status_code == 200
     assert alerts_response.json()[0]["snapshot_id"] == snapshot_payload["snapshot_id"]
@@ -263,6 +281,7 @@ def test_openapi_exposes_frontend_backend_contract_paths() -> None:
     assert "/api/v1/farms" in paths
     assert "/api/v1/measurements/ingest" in paths
     assert "/api/v1/digital-twin/{pond_id}/snapshot" in paths
+    assert "/api/v1/digital-twin/{pond_id}/projection" in paths
     assert "/api/v1/alerts" in paths
     assert "/api/v1/actuation-commands/from-recommendation" in paths
     assert "/api/v1/frontend/dashboard" in paths

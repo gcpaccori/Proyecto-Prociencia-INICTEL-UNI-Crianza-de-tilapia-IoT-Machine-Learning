@@ -1,6 +1,12 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from backend.app.application.store import InMemoryBackendStore
+from backend.app.domains.digital_twin import (
+    DigitalTwinModelParticipation,
+    DigitalTwinProjectionPoint,
+    DigitalTwinProjectionRequest,
+    DigitalTwinProjectionResponse,
+)
 from backend.app.domains.models import (
     ModelCatalogItem,
     ModelInputAudit,
@@ -15,7 +21,10 @@ from backend.app.models_engine.base import (
     ModelRunContext,
 )
 from backend.app.models_engine.orchestrators import DigitalTwinOrchestrator
-from backend.app.models_engine.orchestrators.model_suite import build_default_model_suite
+from backend.app.models_engine.orchestrators.model_suite import (
+    build_default_model_suite,
+    default_model_codes,
+)
 from backend.app.models_engine.orchestrators.schemas import (
     DigitalTwinSnapshot,
     DigitalTwinState,
@@ -723,3 +732,152 @@ class DigitalTwinApplicationService:
             operational_constraints=operational_constraints,
         )
         return self.store.save_snapshot(snapshot)
+
+    def project_scenario(
+        self,
+        pond_id: str,
+        request: DigitalTwinProjectionRequest,
+    ) -> DigitalTwinProjectionResponse:
+        generated_at = datetime.now(timezone.utc)
+        state = self.load_state(pond_id, generated_at)
+        baseline = {
+            code: float(value.value)
+            for code, value in state.water_quality_current.items()
+            if isinstance(value.value, (int, float))
+        }
+        trends = {
+            code: self._observed_trend_per_hour(pond_id, code)
+            for code in baseline
+        }
+        adjustments = {
+            code: float(value)
+            for code, value in request.variable_adjustments_per_hour.items()
+            if code in baseline
+        }
+        points = [
+            DigitalTwinProjectionPoint(
+                timestamp=generated_at + timedelta(hours=hour),
+                hour=hour,
+                values={
+                    code: baseline_value
+                    + (trends.get(code, 0.0) + adjustments.get(code, 0.0)) * hour
+                    for code, baseline_value in baseline.items()
+                },
+                provenance={
+                    code: (
+                        "clean_measurements+observed_linear_trend+scenario_adjustment"
+                        if code in adjustments
+                        else "clean_measurements+observed_linear_trend"
+                    )
+                    for code in baseline
+                },
+            )
+            for hour in range(0, request.horizon_hours + 1, request.step_hours)
+        ]
+        participation = self._model_participation(request.selected_models)
+        warnings = []
+        if not baseline:
+            warnings.append("No hay mediciones limpias numericas para proyectar.")
+        if any(item.status != "available" for item in participation):
+            warnings.append(
+                "Algunos modelos seleccionados no tienen artefacto o entrada productiva disponible."
+            )
+        warnings.append(
+            "La curva temporal es un escenario operacional basado en tendencia observada; "
+            "no sustituye una inferencia cientifica del modelo cuando no existe artefacto productivo."
+        )
+        return DigitalTwinProjectionResponse(
+            pond_id=pond_id,
+            generated_at=generated_at,
+            horizon_hours=request.horizon_hours,
+            step_hours=request.step_hours,
+            baseline_values=baseline,
+            observed_trends_per_hour=trends,
+            scenario_adjustments_per_hour=adjustments,
+            points=points,
+            model_participation=participation,
+            warnings=warnings,
+            traceability={
+                "data_origin": "clean_measurements",
+                "projection_method": "observed_linear_trend_with_explicit_scenario_adjustments",
+                "generated_data_used": False,
+                "decision_grade": False,
+                "selected_models": [item.model_code for item in participation],
+            },
+        )
+
+    def _observed_trend_per_hour(self, pond_id: str, variable_code: str) -> float:
+        measurements = sorted(
+            self.store.list_clean_measurements(
+                pond_id=pond_id,
+                variable_code=variable_code,
+                limit=48,
+            ),
+            key=lambda item: item.time,
+        )
+        if len(measurements) < 2:
+            return 0.0
+        first = measurements[0]
+        last = measurements[-1]
+        elapsed_hours = (last.time - first.time).total_seconds() / 3600
+        if elapsed_hours <= 0:
+            return 0.0
+        return float(last.clean_value - first.clean_value) / elapsed_hours
+
+    def _model_participation(
+        self,
+        selected_models: list[str],
+    ) -> list[DigitalTwinModelParticipation]:
+        deterministic_impacts = {
+            "DO_DYNAMIC_0D_ROYER_2021": ["dissolved_oxygen_mg_l"],
+            "DO_TRANSPORT_1D": ["dissolved_oxygen_mg_l"],
+            "RAS_OXYGEN_BALANCE": ["dissolved_oxygen_mg_l"],
+            "PEARSON_LSTM_ATTENTION_WQ": [
+                "dissolved_oxygen_mg_l",
+                "water_temperature_c",
+                "ph",
+            ],
+            "YI_ENVIRONMENTAL_GROWTH": ["water_temperature_c", "dissolved_oxygen_mg_l"],
+            "BIOENERGETIC_SPARUS_AURATA_BRIGOLIN_2010": [
+                "water_temperature_c",
+                "dissolved_oxygen_mg_l",
+            ],
+            "FEEDING_SATIETY_RULES": ["dissolved_oxygen_mg_l", "water_temperature_c"],
+        }
+        active_assets = {
+            asset.model_code: asset
+            for asset in self.store.list_model_assets(status="active")
+        }
+        requires_artifact = {
+            "BPNN_MEA_FEED_INTAKE",
+            "FISH_COUNTING_MODEL",
+            "FISH_SIZE_WEIGHT_ESTIMATION",
+            "PEARSON_LSTM_ATTENTION_WQ",
+        }
+        available_codes = set(default_model_codes()) | set(active_assets)
+        requested = selected_models or sorted(available_codes)
+        result = []
+        for model_code in requested:
+            asset = active_assets.get(model_code)
+            if model_code not in available_codes:
+                status = "unavailable"
+            elif model_code in requires_artifact and asset is None:
+                status = "registered_requires_artifact"
+            else:
+                status = "available"
+            result.append(
+                DigitalTwinModelParticipation(
+                    model_code=model_code,
+                    status=status,
+                    impact_variables=deterministic_impacts.get(model_code, []),
+                    explanation=(
+                        "Disponible para contexto y trazabilidad del escenario."
+                        if status == "available"
+                        else "Runner registrado, pero requiere artefacto entrenado activo."
+                        if status == "registered_requires_artifact"
+                        else "No existe runner registrado ni artefacto activo."
+                    ),
+                    asset_id=asset.asset_id if asset else None,
+                )
+            )
+        return result

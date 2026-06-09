@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from backend.app.api.v1.dependencies import get_digital_twin_service, get_store
 from backend.app.application import DigitalTwinApplicationService, InMemoryBackendStore
-from backend.app.domains.digital_twin import DigitalTwinSnapshotCreate
+from backend.app.domains.digital_twin import (
+    DigitalTwinProjectionRequest,
+    DigitalTwinProjectionResponse,
+    DigitalTwinSnapshotCreate,
+)
 from backend.app.models_engine.orchestrators.schemas import (
     DigitalTwinSnapshot,
     DigitalTwinState,
@@ -19,6 +23,18 @@ def get_pond_state(
     service: DigitalTwinApplicationService = Depends(get_digital_twin_service),
 ) -> DigitalTwinState:
     return service.load_state(pond_id)
+
+
+@router.post(
+    "/digital-twin/{pond_id}/projection",
+    response_model=DigitalTwinProjectionResponse,
+)
+def project_digital_twin_scenario(
+    pond_id: str,
+    payload: DigitalTwinProjectionRequest,
+    service: DigitalTwinApplicationService = Depends(get_digital_twin_service),
+) -> DigitalTwinProjectionResponse:
+    return service.project_scenario(pond_id, payload)
 
 
 @router.post(
