@@ -79,6 +79,10 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
     assert projection["pond_id"] == pond_id
     assert [point["hour"] for point in projection["points"]] == [0, 3, 6, 9, 12]
     assert projection["baseline_values"]["water_temperature_c"] == 18.4
+    assert projection["baseline_observed_at"]["water_temperature_c"]
+    assert projection["baseline_ingested_at"]["water_temperature_c"]
+    assert projection["baseline_units"]["water_temperature_c"] == "degC"
+    assert projection["baseline_quality_flags"]["water_temperature_c"] == "valid"
     assert projection["scenario_adjustments_per_hour"]["water_temperature_c"] == 0.1
     assert projection["traceability"]["generated_data_used"] is False
     assert projection["traceability"]["model_layer_semantics"] == "operational_activity_index_not_model_output"

@@ -42,6 +42,10 @@ class DigitalTwinProjectionResponse(BaseModel):
     horizon_hours: int
     step_hours: int
     baseline_values: dict[str, float] = Field(default_factory=dict)
+    baseline_observed_at: dict[str, datetime] = Field(default_factory=dict)
+    baseline_ingested_at: dict[str, datetime] = Field(default_factory=dict)
+    baseline_units: dict[str, str] = Field(default_factory=dict)
+    baseline_quality_flags: dict[str, str] = Field(default_factory=dict)
     observed_trends_per_hour: dict[str, float] = Field(default_factory=dict)
     scenario_adjustments_per_hour: dict[str, float] = Field(default_factory=dict)
     points: list[DigitalTwinProjectionPoint] = Field(default_factory=list)

@@ -745,6 +745,12 @@ class DigitalTwinApplicationService:
             for code, value in state.water_quality_current.items()
             if isinstance(value.value, (int, float))
         }
+        latest_measurements = self.store.latest_clean_by_variable(pond_id)
+        baseline_measurements = {
+            code: measurement
+            for code, measurement in latest_measurements.items()
+            if code in baseline
+        }
         trends = {
             code: self._observed_trend_per_hour(pond_id, code)
             for code in baseline
@@ -802,6 +808,22 @@ class DigitalTwinApplicationService:
             horizon_hours=request.horizon_hours,
             step_hours=request.step_hours,
             baseline_values=baseline,
+            baseline_observed_at={
+                code: measurement.time
+                for code, measurement in baseline_measurements.items()
+            },
+            baseline_ingested_at={
+                code: measurement.created_at
+                for code, measurement in baseline_measurements.items()
+            },
+            baseline_units={
+                code: measurement.standard_unit
+                for code, measurement in baseline_measurements.items()
+            },
+            baseline_quality_flags={
+                code: measurement.quality_flag
+                for code, measurement in baseline_measurements.items()
+            },
             observed_trends_per_hour=trends,
             scenario_adjustments_per_hour=adjustments,
             points=points,
