@@ -81,7 +81,11 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
     assert projection["baseline_values"]["water_temperature_c"] == 18.4
     assert projection["scenario_adjustments_per_hour"]["water_temperature_c"] == 0.1
     assert projection["traceability"]["generated_data_used"] is False
+    assert projection["traceability"]["model_layer_semantics"] == "operational_activity_index_not_model_output"
     assert projection["model_participation"][0]["model_code"] == "DO_DYNAMIC_0D_ROYER_2021"
+    assert projection["model_participation"][0]["influence_weight"] == 1.0
+    assert set(projection["points"][0]["model_activity"]) == {"DO_DYNAMIC_0D_ROYER_2021"}
+    assert projection["points"][0]["model_activity"]["DO_DYNAMIC_0D_ROYER_2021"] == 85.0
 
     alerts_response = client.get("/api/v1/alerts", params={"pond_id": pond_id})
     assert alerts_response.status_code == 200

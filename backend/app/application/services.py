@@ -754,6 +754,7 @@ class DigitalTwinApplicationService:
             for code, value in request.variable_adjustments_per_hour.items()
             if code in baseline
         }
+        participation = self._model_participation(request.selected_models)
         points = [
             DigitalTwinProjectionPoint(
                 timestamp=generated_at + timedelta(hours=hour),
@@ -771,10 +772,19 @@ class DigitalTwinApplicationService:
                     )
                     for code in baseline
                 },
+                model_activity={
+                    item.model_code: self._model_activity_index(
+                        item,
+                        hour,
+                        baseline,
+                        trends,
+                        adjustments,
+                    )
+                    for item in participation
+                },
             )
             for hour in range(0, request.horizon_hours + 1, request.step_hours)
         ]
-        participation = self._model_participation(request.selected_models)
         warnings = []
         if not baseline:
             warnings.append("No hay mediciones limpias numericas para proyectar.")
@@ -803,7 +813,36 @@ class DigitalTwinApplicationService:
                 "generated_data_used": False,
                 "decision_grade": False,
                 "selected_models": [item.model_code for item in participation],
+                "model_layer_semantics": "operational_activity_index_not_model_output",
             },
+        )
+
+    @staticmethod
+    def _model_activity_index(
+        participation: DigitalTwinModelParticipation,
+        hour: int,
+        baseline: dict[str, float],
+        trends: dict[str, float],
+        adjustments: dict[str, float],
+    ) -> float:
+        if participation.influence_weight <= 0:
+            return 0.0
+        impacted = [
+            code
+            for code in participation.impact_variables
+            if code in baseline
+        ]
+        if not impacted:
+            return round(participation.influence_weight * 85, 2)
+        relative_changes = [
+            abs((trends.get(code, 0.0) + adjustments.get(code, 0.0)) * hour)
+            / max(abs(baseline[code]), 1.0)
+            for code in impacted
+        ]
+        scenario_relevance = min(sum(relative_changes) / len(relative_changes), 1.0)
+        return round(
+            min(100.0, participation.influence_weight * 85 + scenario_relevance * 15),
+            2,
         )
 
     def _observed_trend_per_hour(self, pond_id: str, variable_code: str) -> float:
@@ -865,11 +904,19 @@ class DigitalTwinApplicationService:
                 status = "registered_requires_artifact"
             else:
                 status = "available"
+            influence_weight = (
+                1.0
+                if status == "available"
+                else 0.45
+                if status == "registered_requires_artifact"
+                else 0.0
+            )
             result.append(
                 DigitalTwinModelParticipation(
                     model_code=model_code,
                     status=status,
                     impact_variables=deterministic_impacts.get(model_code, []),
+                    influence_weight=influence_weight,
                     explanation=(
                         "Disponible para contexto y trazabilidad del escenario."
                         if status == "available"

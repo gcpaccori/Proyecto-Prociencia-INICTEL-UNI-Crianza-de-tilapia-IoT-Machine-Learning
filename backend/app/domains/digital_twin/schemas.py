@@ -24,12 +24,14 @@ class DigitalTwinProjectionPoint(BaseModel):
     hour: int
     values: dict[str, float] = Field(default_factory=dict)
     provenance: dict[str, str] = Field(default_factory=dict)
+    model_activity: dict[str, float] = Field(default_factory=dict)
 
 
 class DigitalTwinModelParticipation(BaseModel):
     model_code: str
     status: str
     impact_variables: list[str] = Field(default_factory=list)
+    influence_weight: float = 0.0
     explanation: str
     asset_id: str | None = None
 
