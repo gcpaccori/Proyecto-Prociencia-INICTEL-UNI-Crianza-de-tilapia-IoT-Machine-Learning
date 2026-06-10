@@ -22,7 +22,6 @@ from backend.app.models_engine.base import (
 )
 from backend.app.models_engine.deterministic.growth import (
     haskell_feed_rate,
-    nile_tilapia_weight_from_length,
     oxygen_factor_yi,
     soderberg_delta_l,
     temperature_factor_yi,
@@ -900,7 +899,7 @@ class DigitalTwinApplicationService:
         initial_length_mm = self._control_number(
             controls,
             "fish_length_cm",
-            ((initial_weight_g / 1.861e-8) ** (1.0 / 3.0)) / 10.0,
+            18.6 * ((initial_weight_g / 120.0) ** (1.0 / 3.0)),
             0.1,
         ) * 10.0
         volume_m3 = self._control_number(
@@ -976,7 +975,9 @@ class DigitalTwinApplicationService:
             except ValueError:
                 daily_length_gain_mm = 0.0
             current_length_mm = initial_length_mm + daily_length_gain_mm * elapsed_days
-            current_weight_g = nile_tilapia_weight_from_length(current_length_mm)
+            current_weight_g = initial_weight_g * (
+                current_length_mm / initial_length_mm
+            ) ** 3
             biomass_kg = current_weight_g * fish_count / 1000.0
             density_kg_m3 = biomass_kg / volume_m3
             feed_rate_percent = haskell_feed_rate(
@@ -1016,7 +1017,12 @@ class DigitalTwinApplicationService:
                     "density_kg_m3": round(density_kg_m3, 3),
                     "daily_length_gain_mm_day": round(daily_length_gain_mm, 4),
                     "daily_weight_gain_g_fish": round(
-                        max(0.0, current_weight_g - nile_tilapia_weight_from_length(previous_length_mm)),
+                        max(
+                            0.0,
+                            current_weight_g
+                            - initial_weight_g
+                            * (previous_length_mm / initial_length_mm) ** 3,
+                        ),
                         4,
                     ),
                     "daily_feed_kg": round(daily_feed_kg, 4),
@@ -1064,7 +1070,7 @@ class DigitalTwinApplicationService:
             "assumptions": {
                 "species": "nile tilapia",
                 "growth_formula": "Soderberg combined 21-30 C",
-                "weight_length_formula": "W=1.861e-8*L^3",
+                "weight_length_formula": "relative cubic Wt=W0*(Lt/L0)^3 from documented W proportional to L^3",
                 "feed_formula": "Haskell F=(3*C*dL/L)*100",
                 "aeration_do_effect_mg_l_h_at_100": aeration_effect,
                 "filtration_nitrate_effect_mg_l_h_at_100": filtration_nitrate_effect,

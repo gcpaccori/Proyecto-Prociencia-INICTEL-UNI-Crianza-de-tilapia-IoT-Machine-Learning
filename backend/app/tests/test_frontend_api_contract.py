@@ -102,6 +102,7 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
     assert set(projection["points"][0]["model_activity"]) == {"DO_DYNAMIC_0D_ROYER_2021"}
     assert projection["points"][0]["model_activity"]["DO_DYNAMIC_0D_ROYER_2021"] == 85.0
     assert projection["initial_productive_state"]["fish_count"] == 100
+    assert projection["initial_productive_state"]["average_weight_g"] == 120
     assert projection["initial_productive_state"]["biomass_kg"] > 0
     assert projection["simulation_summary"]["final_biomass_kg"] > 0
     assert projection["simulation_summary"]["feed_required_kg"] >= 0
