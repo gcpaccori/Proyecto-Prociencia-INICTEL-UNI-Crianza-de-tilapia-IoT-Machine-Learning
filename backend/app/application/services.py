@@ -20,6 +20,13 @@ from backend.app.models_engine.base import (
     ModelOutput,
     ModelRunContext,
 )
+from backend.app.models_engine.deterministic.growth import (
+    haskell_feed_rate,
+    nile_tilapia_weight_from_length,
+    oxygen_factor_yi,
+    soderberg_delta_l,
+    temperature_factor_yi,
+)
 from backend.app.models_engine.orchestrators import DigitalTwinOrchestrator
 from backend.app.models_engine.orchestrators.model_suite import (
     build_default_model_suite,
@@ -761,13 +768,32 @@ class DigitalTwinApplicationService:
             if code in baseline
         }
         participation = self._model_participation(request.selected_models)
+        productive = self._productive_simulation(
+            pond_id=pond_id,
+            baseline=baseline,
+            trends=trends,
+            adjustments=adjustments,
+            controls=request.operational_controls,
+            horizon_hours=request.horizon_hours,
+            step_hours=request.step_hours,
+        )
         points = [
             DigitalTwinProjectionPoint(
                 timestamp=generated_at + timedelta(hours=hour),
                 hour=hour,
                 values={
-                    code: baseline_value
-                    + (trends.get(code, 0.0) + adjustments.get(code, 0.0)) * hour
+                    code: float(
+                        productive["points"][hour]["operational_state"].get(
+                            "projected_oxygen_mg_l"
+                            if code == "dissolved_oxygen_mg_l"
+                            else "projected_nitrate_mg_l"
+                            if code == "nitrate_ion"
+                            else f"projected_{code}",
+                            baseline_value
+                            + (trends.get(code, 0.0) + adjustments.get(code, 0.0))
+                            * hour,
+                        )
+                    )
                     for code, baseline_value in baseline.items()
                 },
                 provenance={
@@ -788,6 +814,8 @@ class DigitalTwinApplicationService:
                     )
                     for item in participation
                 },
+                biological_state=productive["points"][hour]["biological_state"],
+                operational_state=productive["points"][hour]["operational_state"],
             )
             for hour in range(0, request.horizon_hours + 1, request.step_hours)
         ]
@@ -827,6 +855,10 @@ class DigitalTwinApplicationService:
             observed_trends_per_hour=trends,
             scenario_adjustments_per_hour=adjustments,
             operational_controls=request.operational_controls,
+            initial_productive_state=productive["initial_state"],
+            simulation_summary=productive["summary"],
+            derived_indicators=productive["derived_indicators"],
+            simulation_assumptions=productive["assumptions"],
             points=points,
             model_participation=participation,
             warnings=warnings,
@@ -837,12 +869,245 @@ class DigitalTwinApplicationService:
                 "decision_grade": False,
                 "selected_models": [item.model_code for item in participation],
                 "model_layer_semantics": "operational_activity_index_not_model_output",
-                "operational_controls_semantics": (
-                    "operator_context_for_traceability_not_numeric_effect_unless_explicit_adjustment"
-                ),
+                "operational_controls_semantics": "productive_simulation_inputs_with_explicit_assumptions",
                 "operational_controls": request.operational_controls,
+                "productive_formulas": [
+                    "Soderberg daily length gain for Nile tilapia",
+                    "Nile tilapia weight-length W=1.861e-8*L^3",
+                    "Haskell feed rate F=(3*C*dL/L)*100",
+                ],
+                "derived_index_semantics": (
+                    "operational_indices_are_simulation_proxies_not_direct_sensor_measurements"
+                ),
             },
         )
+
+    def _productive_simulation(
+        self,
+        pond_id: str,
+        baseline: dict[str, float],
+        trends: dict[str, float],
+        adjustments: dict[str, float],
+        controls: dict[str, float | bool | str],
+        horizon_hours: int,
+        step_hours: int,
+    ) -> dict[str, object]:
+        pond = self.store.get_pond(pond_id)
+        fish_count = self._control_number(controls, "fish_count", 25.0, 1.0)
+        initial_weight_g = self._control_number(
+            controls, "average_weight_g", 120.0, 0.1
+        )
+        initial_length_mm = self._control_number(
+            controls,
+            "fish_length_cm",
+            ((initial_weight_g / 1.861e-8) ** (1.0 / 3.0)) / 10.0,
+            0.1,
+        ) * 10.0
+        volume_m3 = self._control_number(
+            controls,
+            "tank_volume_m3",
+            float(pond.water_volume_l) / 1000.0
+            if pond is not None and pond.water_volume_l
+            else 10.0,
+            0.1,
+        )
+        fcr = self._control_number(controls, "feed_conversion_ratio", 1.5, 0.1)
+        feed_multiplier = self._control_number(
+            controls, "feeding_percent", 100.0, 0.0
+        ) / 100.0
+        aeration = self._control_number(controls, "aeration_percent", 60.0, 0.0)
+        filtration = self._control_number(
+            controls, "filtration_percent", 50.0, 0.0
+        )
+        aeration_effect = self._control_number(
+            controls, "aeration_do_effect_mg_l_h_at_100", 0.015, 0.0
+        )
+        filtration_nitrate_effect = self._control_number(
+            controls, "filtration_nitrate_effect_mg_l_h_at_100", 0.02, 0.0
+        )
+        cleaning_events = self._control_number(
+            controls, "siphon_events", 0.0, 0.0
+        )
+        feeding_events = self._control_number(
+            controls, "feed_events", 0.0, 0.0
+        )
+        points: dict[int, dict[str, object]] = {}
+        cumulative_feed_kg = 0.0
+        previous_hour = 0
+        previous_length_mm = initial_length_mm
+
+        for hour in range(0, horizon_hours + 1, step_hours):
+            elapsed_days = hour / 24.0
+            elapsed_step_days = (hour - previous_hour) / 24.0
+            water = {
+                code: value + (trends.get(code, 0.0) + adjustments.get(code, 0.0)) * hour
+                for code, value in baseline.items()
+            }
+            oxygen = water.get("dissolved_oxygen_mg_l", 6.0)
+            oxygen += ((aeration - 50.0) / 50.0) * aeration_effect * hour
+            temperature = water.get("water_temperature_c", 27.0)
+            ph = water.get("ph", 7.5)
+            nitrate = water.get("nitrate_ion", 10.0)
+            nitrate = max(
+                0.0,
+                nitrate
+                - ((filtration - 50.0) / 50.0)
+                * filtration_nitrate_effect
+                * hour,
+            )
+            oxygen_factor = oxygen_factor_yi(oxygen, 3.0, 5.0)
+            temperature_factor = temperature_factor_yi(temperature, 20.0, 28.0, 35.0)
+            ph_factor = self._range_factor(ph, 6.5, 7.0, 8.5, 9.0)
+            nitrate_factor = self._descending_factor(nitrate, 20.0, 50.0)
+            water_quality_index = 100.0 * min(
+                oxygen_factor, temperature_factor, ph_factor, nitrate_factor
+            )
+            appetite_index = 100.0 * min(
+                oxygen_factor, temperature_factor, ph_factor
+            ) * feed_multiplier
+            stress_index = 100.0 - water_quality_index
+
+            try:
+                daily_length_gain_mm = float(
+                    soderberg_delta_l(temperature, "nile tilapia")[
+                        "daily_length_gain_mm_day"
+                    ]
+                )
+            except ValueError:
+                daily_length_gain_mm = 0.0
+            current_length_mm = initial_length_mm + daily_length_gain_mm * elapsed_days
+            current_weight_g = nile_tilapia_weight_from_length(current_length_mm)
+            biomass_kg = current_weight_g * fish_count / 1000.0
+            density_kg_m3 = biomass_kg / volume_m3
+            feed_rate_percent = haskell_feed_rate(
+                fcr, daily_length_gain_mm, max(current_length_mm, 0.1)
+            )
+            daily_feed_kg = biomass_kg * feed_rate_percent / 100.0 * feed_multiplier
+            cumulative_feed_kg += daily_feed_kg * elapsed_step_days
+            load_index = min(
+                100.0,
+                max(
+                    0.0,
+                    density_kg_m3 * 1.4
+                    + daily_feed_kg * 18.0
+                    + feeding_events * 2.0
+                    - filtration * 0.55
+                    - cleaning_events * 12.0,
+                ),
+            )
+            risk_exposed_fish = fish_count * stress_index / 100.0
+            behavior = (
+                "critical_mortality_risk"
+                if water_quality_index < 20
+                else "disease_risk"
+                if water_quality_index < 45
+                else "stressed"
+                if water_quality_index < 70
+                else "feeding"
+                if feeding_events > 0 and appetite_index >= 60
+                else "normal"
+            )
+            points[hour] = {
+                "biological_state": {
+                    "fish_count": round(fish_count, 2),
+                    "average_weight_g": round(current_weight_g, 3),
+                    "fish_length_cm": round(current_length_mm / 10.0, 3),
+                    "biomass_kg": round(biomass_kg, 3),
+                    "density_kg_m3": round(density_kg_m3, 3),
+                    "daily_length_gain_mm_day": round(daily_length_gain_mm, 4),
+                    "daily_weight_gain_g_fish": round(
+                        max(0.0, current_weight_g - nile_tilapia_weight_from_length(previous_length_mm)),
+                        4,
+                    ),
+                    "daily_feed_kg": round(daily_feed_kg, 4),
+                    "cumulative_feed_kg": round(cumulative_feed_kg, 4),
+                    "feed_conversion_ratio": round(fcr, 3),
+                },
+                "operational_state": {
+                    "water_quality_index": round(water_quality_index, 2),
+                    "appetite_index": round(appetite_index, 2),
+                    "stress_index": round(stress_index, 2),
+                    "organic_load_index": round(load_index, 2),
+                    "fish_at_risk_proxy": round(risk_exposed_fish, 2),
+                    "behavior": behavior,
+                    "projected_oxygen_mg_l": round(max(0.0, oxygen), 3),
+                    "projected_nitrate_mg_l": round(nitrate, 3),
+                },
+            }
+            previous_hour = hour
+            previous_length_mm = current_length_mm
+
+        initial = points[0]["biological_state"]
+        final = points[max(points)]["biological_state"]
+        final_operational = points[max(points)]["operational_state"]
+        return {
+            "points": points,
+            "initial_state": initial,
+            "summary": {
+                "horizon_days": round(horizon_hours / 24.0, 2),
+                "final_biomass_kg": final["biomass_kg"],
+                "biomass_gain_kg": round(
+                    float(final["biomass_kg"]) - float(initial["biomass_kg"]), 3
+                ),
+                "final_average_weight_g": final["average_weight_g"],
+                "feed_required_kg": final["cumulative_feed_kg"],
+                "final_water_quality_index": final_operational["water_quality_index"],
+                "final_behavior": final_operational["behavior"],
+            },
+            "derived_indicators": {
+                "water_quality_index": points[0]["operational_state"]["water_quality_index"],
+                "appetite_index": points[0]["operational_state"]["appetite_index"],
+                "stress_index": points[0]["operational_state"]["stress_index"],
+                "organic_load_index": points[0]["operational_state"]["organic_load_index"],
+                "behavior": points[0]["operational_state"]["behavior"],
+            },
+            "assumptions": {
+                "species": "nile tilapia",
+                "growth_formula": "Soderberg combined 21-30 C",
+                "weight_length_formula": "W=1.861e-8*L^3",
+                "feed_formula": "Haskell F=(3*C*dL/L)*100",
+                "aeration_do_effect_mg_l_h_at_100": aeration_effect,
+                "filtration_nitrate_effect_mg_l_h_at_100": filtration_nitrate_effect,
+                "operational_indices": "simulation proxies, not direct measurements",
+                "mortality": "risk exposure only; confirmed deaths require mortality records",
+            },
+        }
+
+    @staticmethod
+    def _control_number(
+        controls: dict[str, float | bool | str],
+        name: str,
+        default: float,
+        minimum: float,
+    ) -> float:
+        try:
+            return max(minimum, float(controls.get(name, default)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _range_factor(
+        value: float,
+        minimum: float,
+        optimal_minimum: float,
+        optimal_maximum: float,
+        maximum: float,
+    ) -> float:
+        if value <= minimum or value >= maximum:
+            return 0.0
+        if optimal_minimum <= value <= optimal_maximum:
+            return 1.0
+        if value < optimal_minimum:
+            return (value - minimum) / (optimal_minimum - minimum)
+        return (maximum - value) / (maximum - optimal_maximum)
+
+    @staticmethod
+    def _descending_factor(value: float, optimal_maximum: float, maximum: float) -> float:
+        if value <= optimal_maximum:
+            return 1.0
+        if value >= maximum:
+            return 0.0
+        return (maximum - value) / (maximum - optimal_maximum)
 
     @staticmethod
     def _model_activity_index(

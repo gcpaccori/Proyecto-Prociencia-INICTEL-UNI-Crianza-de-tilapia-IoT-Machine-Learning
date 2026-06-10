@@ -72,7 +72,14 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
             "step_hours": 3,
             "selected_models": ["DO_DYNAMIC_0D_ROYER_2021"],
             "variable_adjustments_per_hour": {"water_temperature_c": 0.1},
-            "operational_controls": {"aeration_percent": 70, "filtration_percent": 55},
+            "operational_controls": {
+                "aeration_percent": 70,
+                "filtration_percent": 55,
+                "fish_count": 100,
+                "average_weight_g": 120,
+                "tank_volume_m3": 10,
+                "feed_conversion_ratio": 1.5,
+            },
         },
     )
     assert projection_response.status_code == 200
@@ -89,10 +96,41 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
     assert projection["traceability"]["operational_controls"]["filtration_percent"] == 55
     assert projection["traceability"]["generated_data_used"] is False
     assert projection["traceability"]["model_layer_semantics"] == "operational_activity_index_not_model_output"
+    assert projection["traceability"]["operational_controls_semantics"] == "productive_simulation_inputs_with_explicit_assumptions"
     assert projection["model_participation"][0]["model_code"] == "DO_DYNAMIC_0D_ROYER_2021"
     assert projection["model_participation"][0]["influence_weight"] == 1.0
     assert set(projection["points"][0]["model_activity"]) == {"DO_DYNAMIC_0D_ROYER_2021"}
     assert projection["points"][0]["model_activity"]["DO_DYNAMIC_0D_ROYER_2021"] == 85.0
+    assert projection["initial_productive_state"]["fish_count"] == 100
+    assert projection["initial_productive_state"]["biomass_kg"] > 0
+    assert projection["simulation_summary"]["final_biomass_kg"] > 0
+    assert projection["simulation_summary"]["feed_required_kg"] >= 0
+    assert projection["points"][-1]["biological_state"]["average_weight_g"] > 0
+    assert 0 <= projection["points"][-1]["operational_state"]["stress_index"] <= 100
+    assert projection["simulation_assumptions"]["mortality"].startswith("risk exposure")
+
+    low_aeration_projection = client.post(
+        f"/api/v1/digital-twin/{pond_id}/projection",
+        json={
+            "horizon_hours": 12,
+            "step_hours": 3,
+            "operational_controls": {
+                "aeration_percent": 0,
+                "filtration_percent": 0,
+                "fish_count": 100,
+                "average_weight_g": 120,
+                "tank_volume_m3": 10,
+            },
+        },
+    ).json()
+    assert (
+        projection["points"][-1]["operational_state"]["projected_oxygen_mg_l"]
+        > low_aeration_projection["points"][-1]["operational_state"]["projected_oxygen_mg_l"]
+    )
+    assert (
+        projection["points"][-1]["operational_state"]["organic_load_index"]
+        < low_aeration_projection["points"][-1]["operational_state"]["organic_load_index"]
+    )
 
     alerts_response = client.get("/api/v1/alerts", params={"pond_id": pond_id})
     assert alerts_response.status_code == 200
