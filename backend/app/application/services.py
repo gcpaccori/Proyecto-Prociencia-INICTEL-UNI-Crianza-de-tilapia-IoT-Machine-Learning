@@ -974,7 +974,11 @@ class DigitalTwinApplicationService:
                 )
             except ValueError:
                 daily_length_gain_mm = 0.0
-            current_length_mm = initial_length_mm + daily_length_gain_mm * elapsed_days
+            current_length_mm = (
+                initial_length_mm + daily_length_gain_mm * elapsed_days
+                if hour == 0
+                else previous_length_mm + daily_length_gain_mm * elapsed_step_days
+            )
             current_weight_g = initial_weight_g * (
                 current_length_mm / initial_length_mm
             ) ** 3
