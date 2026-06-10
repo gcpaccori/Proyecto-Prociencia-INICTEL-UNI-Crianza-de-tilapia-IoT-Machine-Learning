@@ -72,6 +72,7 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
             "step_hours": 3,
             "selected_models": ["DO_DYNAMIC_0D_ROYER_2021"],
             "variable_adjustments_per_hour": {"water_temperature_c": 0.1},
+            "operational_controls": {"aeration_percent": 70, "filtration_percent": 55},
         },
     )
     assert projection_response.status_code == 200
@@ -84,6 +85,8 @@ def test_frontend_flow_ingests_state_creates_snapshot_and_actuation_command() ->
     assert projection["baseline_units"]["water_temperature_c"] == "degC"
     assert projection["baseline_quality_flags"]["water_temperature_c"] == "valid"
     assert projection["scenario_adjustments_per_hour"]["water_temperature_c"] == 0.1
+    assert projection["operational_controls"]["aeration_percent"] == 70
+    assert projection["traceability"]["operational_controls"]["filtration_percent"] == 55
     assert projection["traceability"]["generated_data_used"] is False
     assert projection["traceability"]["model_layer_semantics"] == "operational_activity_index_not_model_output"
     assert projection["model_participation"][0]["model_code"] == "DO_DYNAMIC_0D_ROYER_2021"

@@ -17,6 +17,7 @@ class DigitalTwinProjectionRequest(BaseModel):
     step_hours: int = Field(default=1, ge=1, le=24)
     selected_models: list[str] = Field(default_factory=list)
     variable_adjustments_per_hour: dict[str, float] = Field(default_factory=dict)
+    operational_controls: dict[str, float | bool | str] = Field(default_factory=dict)
 
 
 class DigitalTwinProjectionPoint(BaseModel):
@@ -48,6 +49,7 @@ class DigitalTwinProjectionResponse(BaseModel):
     baseline_quality_flags: dict[str, str] = Field(default_factory=dict)
     observed_trends_per_hour: dict[str, float] = Field(default_factory=dict)
     scenario_adjustments_per_hour: dict[str, float] = Field(default_factory=dict)
+    operational_controls: dict[str, float | bool | str] = Field(default_factory=dict)
     points: list[DigitalTwinProjectionPoint] = Field(default_factory=list)
     model_participation: list[DigitalTwinModelParticipation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

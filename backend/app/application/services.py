@@ -826,6 +826,7 @@ class DigitalTwinApplicationService:
             },
             observed_trends_per_hour=trends,
             scenario_adjustments_per_hour=adjustments,
+            operational_controls=request.operational_controls,
             points=points,
             model_participation=participation,
             warnings=warnings,
@@ -836,6 +837,10 @@ class DigitalTwinApplicationService:
                 "decision_grade": False,
                 "selected_models": [item.model_code for item in participation],
                 "model_layer_semantics": "operational_activity_index_not_model_output",
+                "operational_controls_semantics": (
+                    "operator_context_for_traceability_not_numeric_effect_unless_explicit_adjustment"
+                ),
+                "operational_controls": request.operational_controls,
             },
         )
 
