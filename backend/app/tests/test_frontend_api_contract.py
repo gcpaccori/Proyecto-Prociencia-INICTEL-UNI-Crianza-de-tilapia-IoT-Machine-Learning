@@ -422,3 +422,35 @@ def test_frontend_dashboard_and_batch_model_test_are_ready_for_ui() -> None:
         for component in components["components"]
         if component["implementation_status"] == "implemented_backend"
     ) == 40
+
+
+def test_ras_operational_events_are_persisted_and_listed_for_frontend() -> None:
+    client = TestClient(create_app(Settings(environment="test")))
+    feeding = client.post(
+        "/api/v1/digital-twin/LEGACY-POND-1/events",
+        json={
+            "event_type": "feeding",
+            "amount_kg": 1.25,
+            "operator": "productor",
+            "notes": "Racion de prueba",
+            "details": {"feeding_percent": 100, "source": "digital_twin"},
+        },
+    )
+    siphoning = client.post(
+        "/api/v1/digital-twin/LEGACY-POND-1/events",
+        json={
+            "event_type": "siphoning",
+            "operator": "productor",
+            "details": {"filtration_percent": 80},
+        },
+    )
+
+    assert feeding.status_code == 201
+    assert feeding.json()["amount_kg"] == 1.25
+    assert siphoning.status_code == 201
+
+    listed = client.get("/api/v1/digital-twin/LEGACY-POND-1/events?limit=10")
+
+    assert listed.status_code == 200
+    assert len(listed.json()) == 2
+    assert {event["event_type"] for event in listed.json()} == {"feeding", "siphoning"}

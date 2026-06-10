@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from backend.app.api.v1.dependencies import get_digital_twin_service, get_store
 from backend.app.application import DigitalTwinApplicationService, InMemoryBackendStore
@@ -6,6 +6,8 @@ from backend.app.domains.digital_twin import (
     DigitalTwinProjectionRequest,
     DigitalTwinProjectionResponse,
     DigitalTwinSnapshotCreate,
+    RasOperationalEventCreate,
+    RasOperationalEventRead,
 )
 from backend.app.models_engine.orchestrators.schemas import (
     DigitalTwinSnapshot,
@@ -15,6 +17,31 @@ from backend.app.models_engine.orchestrators.schemas import (
 )
 
 router = APIRouter()
+
+
+@router.post(
+    "/digital-twin/{pond_id}/events",
+    response_model=RasOperationalEventRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_ras_operational_event(
+    pond_id: str,
+    payload: RasOperationalEventCreate,
+    store: InMemoryBackendStore = Depends(get_store),
+) -> RasOperationalEventRead:
+    return store.save_ras_operational_event(pond_id, payload)
+
+
+@router.get(
+    "/digital-twin/{pond_id}/events",
+    response_model=list[RasOperationalEventRead],
+)
+def list_ras_operational_events(
+    pond_id: str,
+    limit: int = Query(default=50, ge=1, le=500),
+    store: InMemoryBackendStore = Depends(get_store),
+) -> list[RasOperationalEventRead]:
+    return store.list_ras_operational_events(pond_id, limit)
 
 
 @router.get("/ponds/{pond_id}/state", response_model=DigitalTwinState)

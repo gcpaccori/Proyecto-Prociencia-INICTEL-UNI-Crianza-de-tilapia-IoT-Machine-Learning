@@ -4,6 +4,8 @@ from backend.app.domains.digital_twin.schemas import (
     DigitalTwinProjectionRequest,
     DigitalTwinProjectionResponse,
     DigitalTwinSnapshotCreate,
+    RasOperationalEventCreate,
+    RasOperationalEventRead,
 )
 
 __all__ = [
@@ -12,4 +14,6 @@ __all__ = [
     "DigitalTwinProjectionRequest",
     "DigitalTwinProjectionResponse",
     "DigitalTwinSnapshotCreate",
+    "RasOperationalEventCreate",
+    "RasOperationalEventRead",
 ]

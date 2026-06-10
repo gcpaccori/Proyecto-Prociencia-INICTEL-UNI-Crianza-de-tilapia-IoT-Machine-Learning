@@ -16,6 +16,7 @@ from backend.app.domains.aquaculture import (
     SensorRead,
 )
 from backend.app.domains.decision.schemas import AlertRead, RecommendationRead
+from backend.app.domains.digital_twin import RasOperationalEventCreate, RasOperationalEventRead
 from backend.app.domains.measurements import (
     CleanMeasurementRead,
     MeasurementIngestionResult,
@@ -52,6 +53,7 @@ class InMemoryBackendStore:
         self.training_job_events: dict[str, list[TrainingJobEventRead]] = {}
         self.model_assets: dict[str, ModelAssetRead] = {}
         self.model_asset_predictions: dict[str, ModelAssetPredictionHistoryRead] = {}
+        self.ras_operational_events: dict[str, RasOperationalEventRead] = {}
 
     def create_farm(self, payload: FarmCreate) -> FarmRead:
         with self._lock:
@@ -204,6 +206,40 @@ class InMemoryBackendStore:
         if not snapshots:
             return None
         return max(snapshots, key=lambda snapshot: snapshot.timestamp)
+
+    def save_ras_operational_event(
+        self,
+        pond_id: str,
+        payload: RasOperationalEventCreate,
+    ) -> RasOperationalEventRead:
+        now = self._now()
+        event = RasOperationalEventRead(
+            event_id=self._new_id("RAS-EVENT"),
+            pond_id=pond_id,
+            event_type=payload.event_type,
+            event_time=payload.event_time or now,
+            amount_kg=payload.amount_kg,
+            operator=payload.operator,
+            notes=payload.notes,
+            details=payload.details,
+            created_at=now,
+        )
+        with self._lock:
+            self.ras_operational_events[event.event_id] = event
+        return event
+
+    def list_ras_operational_events(
+        self,
+        pond_id: str,
+        limit: int = 50,
+    ) -> list[RasOperationalEventRead]:
+        with self._lock:
+            events = [
+                event
+                for event in self.ras_operational_events.values()
+                if event.pond_id == pond_id
+            ]
+        return sorted(events, key=lambda event: event.event_time, reverse=True)[:limit]
 
     def list_alerts(
         self,

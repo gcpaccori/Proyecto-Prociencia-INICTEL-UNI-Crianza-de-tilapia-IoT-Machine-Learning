@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +11,27 @@ class DigitalTwinSnapshotCreate(BaseModel):
     state_overrides: dict[str, object] = Field(default_factory=dict)
     model_inputs: dict[str, ModelInput] = Field(default_factory=dict)
     operational_constraints: dict[str, object] = Field(default_factory=dict)
+
+
+class RasOperationalEventCreate(BaseModel):
+    event_type: Literal["feeding", "siphoning"]
+    event_time: datetime | None = None
+    amount_kg: float | None = Field(default=None, ge=0)
+    operator: str | None = None
+    notes: str | None = None
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class RasOperationalEventRead(BaseModel):
+    event_id: str
+    pond_id: str
+    event_type: Literal["feeding", "siphoning"]
+    event_time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    amount_kg: float | None = None
+    operator: str | None = None
+    notes: str | None = None
+    details: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class DigitalTwinProjectionRequest(BaseModel):

@@ -22,6 +22,7 @@ from backend.app.domains.aquaculture import (
     SensorRead,
 )
 from backend.app.domains.decision.schemas import AlertRead, RecommendationRead
+from backend.app.domains.digital_twin import RasOperationalEventCreate, RasOperationalEventRead
 from backend.app.domains.measurements import (
     CleanMeasurementRead,
     MeasurementIngestionResult,
@@ -530,6 +531,72 @@ class MySQLBackendStore:
                 },
             )
         return snapshot
+
+    def save_ras_operational_event(
+        self,
+        pond_id: str,
+        payload: RasOperationalEventCreate,
+    ) -> RasOperationalEventRead:
+        now = self._now()
+        event = RasOperationalEventRead(
+            event_id=self._new_id("RAS-EVENT"),
+            pond_id=pond_id,
+            event_type=payload.event_type,
+            event_time=payload.event_time or now,
+            amount_kg=payload.amount_kg,
+            operator=payload.operator,
+            notes=payload.notes,
+            details=payload.details,
+            created_at=now,
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO ras_operational_events (
+                        event_id, pond_id, event_type, event_time, amount_kg,
+                        operator_name, notes, details_json, created_at
+                    )
+                    VALUES (
+                        :event_id, :pond_id, :event_type, :event_time, :amount_kg,
+                        :operator, :notes, :details, :created_at
+                    )
+                    """
+                ),
+                self._dump_model(event),
+            )
+        return event
+
+    def list_ras_operational_events(
+        self,
+        pond_id: str,
+        limit: int = 50,
+    ) -> list[RasOperationalEventRead]:
+        rows = self._fetch_all(
+            """
+            SELECT event_id, pond_id, event_type, event_time, amount_kg,
+                   operator_name, notes, details_json, created_at
+            FROM ras_operational_events
+            WHERE pond_id = :pond_id
+            ORDER BY event_time DESC
+            LIMIT :limit
+            """,
+            {"pond_id": pond_id, "limit": limit},
+        )
+        return [
+            RasOperationalEventRead(
+                event_id=row["event_id"],
+                pond_id=row["pond_id"],
+                event_type=row["event_type"],
+                event_time=row["event_time"],
+                amount_kg=self._float_or_none(row["amount_kg"]),
+                operator=row["operator_name"],
+                notes=row["notes"],
+                details=self._json(row["details_json"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     def get_snapshot(self, snapshot_id: str) -> DigitalTwinSnapshot | None:
         row = self._fetch_one(
@@ -1522,6 +1589,21 @@ SCHEMA_STATEMENTS = [
         payload_json JSON NOT NULL,
         created_at DATETIME NOT NULL,
         INDEX ix_snapshots_pond_time (pond_id, timestamp)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ras_operational_events (
+        event_id VARCHAR(160) PRIMARY KEY,
+        pond_id VARCHAR(128) NOT NULL,
+        event_type VARCHAR(32) NOT NULL,
+        event_time DATETIME(6) NOT NULL,
+        amount_kg DOUBLE,
+        operator_name VARCHAR(128),
+        notes TEXT,
+        details_json JSON NOT NULL,
+        created_at DATETIME(6) NOT NULL,
+        INDEX ix_ras_events_pond_time (pond_id, event_time),
+        INDEX ix_ras_events_type_time (event_type, event_time)
     )
     """,
     """
