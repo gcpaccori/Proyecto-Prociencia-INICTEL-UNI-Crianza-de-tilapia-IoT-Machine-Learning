@@ -224,6 +224,34 @@ class TrainableModelRead(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class ModelPortfolioRead(BaseModel):
+    model_code: str
+    name: str
+    family: str
+    pond_id: str | None = None
+    can_train: bool
+    readiness_status: str
+    required_variables: list[str] = Field(default_factory=list)
+    available_variables: list[str] = Field(default_factory=list)
+    missing_variables: list[str] = Field(default_factory=list)
+    records_by_variable: dict[str, int] = Field(default_factory=dict)
+    training_runs: int = 0
+    completed_training_runs: int = 0
+    version_count: int = 0
+    versions: list[str] = Field(default_factory=list)
+    active_asset_id: str | None = None
+    active_version: str | None = None
+    active_metrics: dict[str, float] = Field(default_factory=dict)
+    active_since: datetime | None = None
+    active_route: str | None = None
+    best_asset_id: str | None = None
+    best_version: str | None = None
+    best_metrics: dict[str, float] = Field(default_factory=dict)
+    latest_job_id: str | None = None
+    latest_job_status: str | None = None
+    last_trained_at: datetime | None = None
+
+
 class MLLifecycleStatus(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
     datasets_enabled: bool

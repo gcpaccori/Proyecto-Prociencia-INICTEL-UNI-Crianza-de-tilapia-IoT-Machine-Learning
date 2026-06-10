@@ -24,6 +24,7 @@ from backend.app.domains.ml_lifecycle import (
     ModelAssetPredictionRead,
     ModelAssetPredictionHistoryRead,
     ModelAssetRead,
+    ModelPortfolioRead,
     TrainableModelRead,
     TrainingJobEventRead,
     TrainingJobRead,
@@ -579,6 +580,60 @@ class MLLifecycleService:
                 )
             )
         return models
+
+    def model_portfolio(self, pond_id: str | None = None) -> list[ModelPortfolioRead]:
+        portfolio: list[ModelPortfolioRead] = []
+        all_jobs = self.store.list_training_jobs()
+        for model_code, required in sorted(TRAINABLE_MODEL_VARIABLES.items()):
+            readiness = self.readiness(model_code=model_code, pond_id=pond_id)
+            assets = self.store.list_model_assets(model_code=model_code)
+            jobs = [job for job in all_jobs if job.model_code == model_code]
+            active_asset = next((asset for asset in assets if asset.status == "active"), None)
+            latest_job = max(jobs, key=lambda job: job.requested_at) if jobs else None
+            best_asset = self._best_model_asset(assets)
+            portfolio.append(
+                ModelPortfolioRead(
+                    model_code=model_code,
+                    name=model_code.replace("_", " ").title(),
+                    family=self._model_family(model_code),
+                    pond_id=pond_id,
+                    can_train=readiness.can_train,
+                    readiness_status=readiness.status,
+                    required_variables=required,
+                    available_variables=readiness.available_variables,
+                    missing_variables=readiness.missing_variables,
+                    records_by_variable=readiness.records_by_variable,
+                    training_runs=len(jobs),
+                    completed_training_runs=sum(job.status == "completed" for job in jobs),
+                    version_count=len(assets),
+                    versions=[asset.version for asset in assets],
+                    active_asset_id=active_asset.asset_id if active_asset else None,
+                    active_version=active_asset.version if active_asset else None,
+                    active_metrics=active_asset.metrics_json if active_asset else {},
+                    active_since=active_asset.activated_at if active_asset else None,
+                    active_route=f"/models/{model_code}/predict" if active_asset else None,
+                    best_asset_id=best_asset.asset_id if best_asset else None,
+                    best_version=best_asset.version if best_asset else None,
+                    best_metrics=best_asset.metrics_json if best_asset else {},
+                    latest_job_id=latest_job.job_id if latest_job else None,
+                    latest_job_status=latest_job.status if latest_job else None,
+                    last_trained_at=latest_job.finished_at if latest_job else None,
+                )
+            )
+        return portfolio
+
+    @staticmethod
+    def _best_model_asset(assets: list[ModelAssetRead]) -> ModelAssetRead | None:
+        if not assets:
+            return None
+
+        def score(asset: ModelAssetRead) -> tuple[float, float]:
+            metrics = asset.metrics_json
+            r2 = float(metrics.get("r2", float("-inf")))
+            mae = float(metrics.get("mae", float("inf")))
+            return r2, -mae
+
+        return max(assets, key=score)
 
     def model_lifecycle_detail(
         self,

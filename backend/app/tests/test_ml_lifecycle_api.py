@@ -200,6 +200,20 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
         "inference",
     }
 
+    portfolio = client.get("/api/v1/ml/models/portfolio", params={"pond_id": pond_id})
+    assert portfolio.status_code == 200
+    portfolio_model = next(
+        item
+        for item in portfolio.json()
+        if item["model_code"] == "ML_SUPERVISED_LINEAR_REG"
+    )
+    assert portfolio_model["can_train"] is True
+    assert portfolio_model["version_count"] == 1
+    assert portfolio_model["active_version"] == "v1"
+    assert portfolio_model["active_asset_id"] == train_payload["asset_id"]
+    assert portfolio_model["active_route"] == "/models/ML_SUPERVISED_LINEAR_REG/predict"
+    assert "rmse" in portfolio_model["active_metrics"]
+
     lineage = client.get(
         f"/api/v1/ml/model-assets/{train_payload['asset_id']}/lineage"
     )
@@ -226,5 +240,6 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     assert "/api/v1/ml/model-assets/{asset_id}/activate" in paths
     assert "/api/v1/models/{model_code}/predict" in paths
     assert "/api/v1/ml/models/{model_code}/lifecycle" in paths
+    assert "/api/v1/ml/models/portfolio" in paths
     assert "/api/v1/ml/model-assets/{asset_id}/lineage" in paths
     assert "/api/v1/ml/predictions" in paths

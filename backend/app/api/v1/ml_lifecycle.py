@@ -10,6 +10,7 @@ from backend.app.domains.ml_lifecycle import (
     ModelAssetPredictionRequest,
     ModelAssetRead,
     ModelLifecycleDetailRead,
+    ModelPortfolioRead,
     TrainableModelRead,
     TrainingJobEventRead,
     TrainingJobRead,
@@ -35,6 +36,14 @@ def list_trainable_models(
     store: InMemoryBackendStore = Depends(get_store),
 ) -> list[TrainableModelRead]:
     return _service(store).list_trainable_models()
+
+
+@router.get("/ml/models/portfolio", response_model=list[ModelPortfolioRead])
+def get_model_portfolio(
+    pond_id: str | None = Query(default=None),
+    store: InMemoryBackendStore = Depends(get_store),
+) -> list[ModelPortfolioRead]:
+    return _service(store).model_portfolio(pond_id=pond_id)
 
 
 @router.post(
