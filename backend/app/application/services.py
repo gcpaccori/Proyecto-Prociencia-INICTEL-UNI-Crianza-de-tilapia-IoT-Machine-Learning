@@ -770,7 +770,6 @@ class DigitalTwinApplicationService:
         productive = self._productive_simulation(
             pond_id=pond_id,
             baseline=baseline,
-            trends=trends,
             adjustments=adjustments,
             controls=request.operational_controls,
             horizon_hours=request.horizon_hours,
@@ -885,7 +884,6 @@ class DigitalTwinApplicationService:
         self,
         pond_id: str,
         baseline: dict[str, float],
-        trends: dict[str, float],
         adjustments: dict[str, float],
         controls: dict[str, float | bool | str],
         horizon_hours: int,
@@ -939,7 +937,7 @@ class DigitalTwinApplicationService:
             elapsed_days = hour / 24.0
             elapsed_step_days = (hour - previous_hour) / 24.0
             water = {
-                code: value + (trends.get(code, 0.0) + adjustments.get(code, 0.0)) * hour
+                code: value + adjustments.get(code, 0.0) * hour
                 for code, value in baseline.items()
             }
             oxygen = water.get("dissolved_oxygen_mg_l", 6.0)
@@ -1079,6 +1077,10 @@ class DigitalTwinApplicationService:
                 "aeration_do_effect_mg_l_h_at_100": aeration_effect,
                 "filtration_nitrate_effect_mg_l_h_at_100": filtration_nitrate_effect,
                 "operational_indices": "simulation proxies, not direct measurements",
+                "productive_water_baseline": (
+                    "latest clean measurement held constant plus explicit scenario adjustments; "
+                    "short observed trends are not extrapolated across long horizons"
+                ),
                 "mortality": "risk exposure only; confirmed deaths require mortality records",
             },
         }
