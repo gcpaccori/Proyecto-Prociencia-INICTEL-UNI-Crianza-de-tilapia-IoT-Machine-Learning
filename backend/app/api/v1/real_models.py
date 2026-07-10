@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from time import monotonic
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
@@ -8,6 +10,8 @@ from backend.app.application.real_models import RealModelsService
 
 
 router = APIRouter()
+_DASHBOARD_CACHE_SECONDS = 45.0
+_dashboard_cache: dict[str, tuple[float, dict[str, object]]] = {}
 
 
 class DynamicOxygenRequest(BaseModel):
@@ -41,7 +45,10 @@ def _run(callable_: object) -> dict[str, object]:
 
 @router.post("/ponds/{pond_id}/models/svm-od/train", status_code=status.HTTP_201_CREATED)
 def train_svm_od(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
-    return _run(lambda: _service(store).train_svm_od(_legacy_pond_id(pond_id)))
+    resolved_pond_id = _legacy_pond_id(pond_id)
+    result = _run(lambda: _service(store).train_svm_od(resolved_pond_id))
+    _dashboard_cache.pop(resolved_pond_id, None)
+    return result
 
 
 @router.post("/ponds/{pond_id}/models/svm-od/forecast")
@@ -89,4 +96,10 @@ def get_tilapia_growth(
 
 @router.get("/ponds/{pond_id}/ai/dashboard")
 def get_ai_dashboard(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
-    return _run(lambda: _service(store).dashboard(_legacy_pond_id(pond_id)))
+    resolved_pond_id = _legacy_pond_id(pond_id)
+    cached = _dashboard_cache.get(resolved_pond_id)
+    if cached and monotonic() - cached[0] < _DASHBOARD_CACHE_SECONDS:
+        return cached[1]
+    response = _run(lambda: _service(store).dashboard(resolved_pond_id))
+    _dashboard_cache[resolved_pond_id] = (monotonic(), response)
+    return response

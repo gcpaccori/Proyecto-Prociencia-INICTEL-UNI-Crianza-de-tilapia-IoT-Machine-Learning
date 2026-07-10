@@ -340,7 +340,10 @@ class RealModelsService:
         forecast: dict[str, object] | None = None,
     ) -> dict[str, object]:
         prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
-        latest = build_latest_svm_od_features(prepared["aligned"], REQUIRED_VARIABLES)
+        latest = self._latest_observed(
+            prepared["aligned"],
+            ["water_temperature_c", "dissolved_oxygen_mg_l"],
+        )
         if forecast is None:
             forecast = self.forecast_svm_od(pond_id, prepared)
         projected = (
@@ -349,8 +352,8 @@ class RealModelsService:
             else None
         )
         result = oxygen_status(
-            float(latest["water_temperature_c"]),
-            float(latest["dissolved_oxygen_mg_l"]),
+            float(latest["values"]["water_temperature_c"]),
+            float(latest["values"]["dissolved_oxygen_mg_l"]),
             projected,
         )
         return {
@@ -358,7 +361,7 @@ class RealModelsService:
             "model_code": OXYGEN_MODEL_CODE,
             "pond_id": pond_id,
             **result,
-            "issued_at": latest["issued_at"].isoformat(),
+            "issued_at": latest["timestamp"].isoformat(),
             "traceability": {
                 "formula": "DO_sat(T)=14.589-0.4T+0.008T^2-0.0000661T^3",
                 "measured_inputs_only": True,
@@ -373,10 +376,13 @@ class RealModelsService:
         if missing:
             return {"status": "not_ready", "missing_real_inputs": missing}
         prepared = self._prepare_dataset(pond_id, False, 4000)
-        latest = build_latest_svm_od_features(prepared["aligned"], REQUIRED_VARIABLES)
-        saturation = do_saturation(float(latest["water_temperature_c"]))
+        latest = self._latest_observed(
+            prepared["aligned"],
+            ["water_temperature_c", "dissolved_oxygen_mg_l"],
+        )
+        saturation = do_saturation(float(latest["values"]["water_temperature_c"]))
         projected = update_do_0d(
-            x_prev=float(latest["dissolved_oxygen_mg_l"]),
+            x_prev=float(latest["values"]["dissolved_oxygen_mg_l"]),
             x_in=float(inputs["do_influent_mg_l"]),
             q_l_h=float(inputs["flow_rate_l_h"]),
             volume_l=float(inputs["raceway_volume_l"]),
@@ -402,10 +408,10 @@ class RealModelsService:
         projection_days: int | None = None,
     ) -> dict[str, object]:
         prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
-        latest = build_latest_svm_od_features(prepared["aligned"], REQUIRED_VARIABLES)
+        latest = self._latest_observed(prepared["aligned"], ["water_temperature_c"])
         sample = self.store.latest_biometric_sample(pond_id)
         result = tilapia_growth_temperature(
-            float(latest["water_temperature_c"]),
+            float(latest["values"]["water_temperature_c"]),
             float(sample["average_length_mm"])
             if sample and sample.get("average_length_mm") is not None
             else None,
@@ -428,7 +434,14 @@ class RealModelsService:
         forecast = self.forecast_svm_od(pond_id, prepared)
         status = self.oxygen_status_for_pond(pond_id, prepared, forecast)
         growth = self.tilapia_growth(pond_id, prepared)
-        latest = build_latest_svm_od_features(prepared["aligned"], REQUIRED_VARIABLES)
+        latest_od = self._latest_observed(
+            prepared["aligned"],
+            ["water_temperature_c", "dissolved_oxygen_mg_l"],
+        )
+        latest_by_variable = {
+            code: self._latest_observed(prepared["aligned"], [code])
+            for code in REQUIRED_VARIABLES
+        }
         dynamic = {"status": "not_ready", "missing_real_inputs": DYNAMIC_OXYGEN_INPUTS}
 
         observed_do = [
@@ -478,7 +491,7 @@ class RealModelsService:
                 "name": "Proyeccion de oxigeno disuelto a 1 hora",
                 "message": "SVR temporal entrenado con temperatura, pH, OD e ion nitrato reales.",
                 "status": "asset_activo" if forecast.get("status") == "ready" else "sin_datos",
-                "current_value": latest["dissolved_oxygen_mg_l"],
+                "current_value": latest_od["values"]["dissolved_oxygen_mg_l"],
                 "unit": "mg/L",
                 "engine": "FastAPI / scikit-learn",
                 "source": "MySQL sismapiscis.parametro_aguas",
@@ -549,8 +562,11 @@ class RealModelsService:
             "backend_url": "http://aquaculture_backend:8000/api/v1",
             "pond_id": pond_id,
             "latest_measurement": {
-                "timestamp": latest["issued_at"].isoformat(),
-                **{code: latest[code] for code in REQUIRED_VARIABLES},
+                "timestamp": latest_od["timestamp"].isoformat(),
+                **{
+                    code: latest_by_variable[code]["values"][code]
+                    for code in REQUIRED_VARIABLES
+                },
             },
             "svm_od_forecast": forecast,
             "oxygen_status": status,
@@ -568,10 +584,10 @@ class RealModelsService:
                 "cleaning_run_id": prepared["cleaning_run"].run_id if prepared.get("cleaning_run") else None,
             },
             "latest": {
-                "timestamp": latest["issued_at"].isoformat(),
-                "ion_nitrato": latest["nitrate_ion"],
+                "timestamp": latest_od["timestamp"].isoformat(),
+                "ion_nitrato": latest_by_variable["nitrate_ion"]["values"]["nitrate_ion"],
                 "ion_nitrato_unit": "mg/L",
-                "oxigeno_disuelto": latest["dissolved_oxygen_mg_l"],
+                "oxigeno_disuelto": latest_od["values"]["dissolved_oxygen_mg_l"],
                 "oxigeno_disuelto_unit": "mg/L",
                 "piscina": pond_id,
             },
@@ -843,6 +859,20 @@ class RealModelsService:
 
     def _next_version(self) -> str:
         return f"v{len(self.store.list_model_assets(model_code=SVM_MODEL_CODE)) + 1}"
+
+    @staticmethod
+    def _latest_observed(
+        aligned_rows: list[dict[str, object]],
+        variables: list[str],
+    ) -> dict[str, object]:
+        for row in reversed(aligned_rows):
+            invalid = row.get("invalid_variables", set())
+            values = row["values"]
+            if all(values.get(code) is not None and code not in invalid for code in variables):
+                return row
+        raise ValueError(
+            f"no hay una medicion real valida para {', '.join(variables)}"
+        )
 
     @staticmethod
     def _public_asset(asset: ModelAssetRead | None) -> dict[str, object] | None:
