@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -50,6 +51,7 @@ class MySQLBackendStore:
         self.engine = engine
         self.legacy_database_name = legacy_database_name
         self._last_legacy_sync_at = 0.0
+        self._legacy_sync_lock = Lock()
 
     def initialize(self) -> None:
         with self.engine.begin() as connection:
@@ -82,6 +84,14 @@ class MySQLBackendStore:
         self.sync_legacy_data(force=True)
 
     def sync_legacy_data(self, force: bool = False) -> None:
+        if not self._legacy_sync_lock.acquire(blocking=False):
+            return
+        try:
+            self._sync_legacy_data(force=force)
+        finally:
+            self._legacy_sync_lock.release()
+
+    def _sync_legacy_data(self, force: bool = False) -> None:
         if not self.legacy_database_name:
             return
         now = time.monotonic()
