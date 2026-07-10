@@ -216,7 +216,7 @@ def test_unprefixed_frontend_aliases_cors_timeseries_and_model_audit() -> None:
     cors_response = client.options(
         "/health",
         headers={
-            "Origin": "https://example.vercel.app",
+            "Origin": "http://suite.local",
             "Access-Control-Request-Method": "GET",
         },
     )

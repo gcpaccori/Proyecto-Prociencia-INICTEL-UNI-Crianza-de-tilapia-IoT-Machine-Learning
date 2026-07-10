@@ -184,6 +184,51 @@ def nile_tilapia_weight_from_length(length_mm: float) -> float:
     return 1.861e-8 * length**3
 
 
+def tilapia_growth_temperature(
+    temperature_c: float,
+    initial_length_mm: float | None = None,
+    projection_days: int | None = None,
+) -> dict[str, object]:
+    temperature = float(temperature_c)
+    validated_range = [21.0, 30.0]
+    if not validated_range[0] <= temperature <= validated_range[1]:
+        return {
+            "status": "out_of_validated_domain",
+            "temperature_c": temperature,
+            "daily_length_gain_mm_day": None,
+            "validated_temperature_range_c": validated_range,
+            "source_r2": 0.95,
+            "length_projection": None,
+        }
+
+    growth = soderberg_delta_l(temperature, "nile tilapia")
+    daily_gain = float(growth["daily_length_gain_mm_day"])
+    projection = None
+    note = "No se proyecto longitud porque no existe una longitud inicial real."
+    if initial_length_mm is not None:
+        length = _positive("initial_length_mm", initial_length_mm)
+        days = 1 if projection_days is None else int(projection_days)
+        if days < 1:
+            raise ValueError("projection_days must be positive")
+        projected_length = length + daily_gain * days
+        projection = {
+            "initial_length_mm": length,
+            "projection_days": days,
+            "projected_length_mm": projected_length,
+            "projected_weight_g": nile_tilapia_weight_from_length(projected_length),
+        }
+        note = "Longitud y peso proyectados desde una muestra biometrica real."
+    return {
+        "status": "calculated",
+        "temperature_c": temperature,
+        "daily_length_gain_mm_day": daily_gain,
+        "validated_temperature_range_c": validated_range,
+        "source_r2": 0.95,
+        "length_projection": projection,
+        "note": note,
+    }
+
+
 def haskell_feed_rate(
     feed_conversion_ratio: float,
     daily_length_gain: float,

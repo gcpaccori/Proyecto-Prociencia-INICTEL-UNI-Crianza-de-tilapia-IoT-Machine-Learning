@@ -23,6 +23,34 @@ def do_saturation(temp_c: float) -> float:
     return 14.589 - 0.4 * temp + 0.008 * temp**2 - 0.0000661 * temp**3
 
 
+def oxygen_status(
+    temperature_c: float,
+    measured_do_mg_l: float,
+    forecast_do_mg_l: float | None = None,
+) -> dict[str, float | None]:
+    temperature = float(temperature_c)
+    measured = _non_negative("measured_do_mg_l", measured_do_mg_l)
+    saturation = do_saturation(temperature)
+    if saturation <= 0:
+        raise ValueError("oxygen saturation must be positive for the supplied temperature")
+    projected = None if forecast_do_mg_l is None else _non_negative(
+        "forecast_do_mg_l", forecast_do_mg_l
+    )
+    return {
+        "temperature_c": temperature,
+        "measured_do_mg_l": measured,
+        "do_saturation_mg_l": saturation,
+        "saturation_percent": measured / saturation * 100.0,
+        "oxygen_deficit_mg_l": saturation - measured,
+        "forecast_saturation_percent_1h": (
+            projected / saturation * 100.0 if projected is not None else None
+        ),
+        "forecast_deficit_mg_l_1h": (
+            saturation - projected if projected is not None else None
+        ),
+    }
+
+
 def respiration_sinusoidal(
     t_h: float,
     temp_c: float,

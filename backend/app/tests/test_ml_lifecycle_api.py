@@ -1,3 +1,6 @@
+import math
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from backend.app.core.config import Settings
@@ -33,16 +36,17 @@ def _seed_training_dataset(client: TestClient) -> str:
     units = {
         "water_temperature_c": "degC",
         "ph": "pH",
-        "nitrate_ion": "source_unit",
+        "nitrate_ion": "mg/L",
         "dissolved_oxygen_mg_l": "mg/L",
     }
-    for index in range(12):
-        timestamp = f"2026-05-01T00:{index:02d}:00Z"
+    started_at = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    for index in range(520):
+        timestamp = (started_at + timedelta(minutes=10 * index)).isoformat()
         values = {
-            "water_temperature_c": 26.0 + index * 0.1,
-            "ph": 7.4 + index * 0.01,
-            "nitrate_ion": 0.10 + index * 0.005,
-            "dissolved_oxygen_mg_l": 6.8 - index * 0.05,
+            "water_temperature_c": 26.0 + math.sin(index / 20),
+            "ph": 7.4 + 0.1 * math.cos(index / 30),
+            "nitrate_ion": 10.0 + math.sin(index / 15),
+            "dissolved_oxygen_mg_l": 6.5 + 0.3 * math.sin(index / 18),
         }
         for variable_code, value in values.items():
             client.post(
@@ -72,7 +76,7 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     coverage = client.get("/api/v1/datasets/coverage", params={"pond_id": pond_id})
     assert coverage.status_code == 200
     coverage_payload = coverage.json()
-    assert coverage_payload["total_records"] >= 48
+    assert coverage_payload["total_records"] >= 2080
     assert "dissolved_oxygen_mg_l" in coverage_payload["trainable_variables"]
 
     readiness = client.get(
@@ -94,12 +98,12 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     assert cleaning.status_code == 201
     cleaning_payload = cleaning.json()
     assert cleaning_payload["status"] == "completed"
-    assert cleaning_payload["records_out"] >= 48
+    assert cleaning_payload["records_out"] >= 2080
     run_id = cleaning_payload["run_id"]
 
     preview = client.get(f"/api/v1/data/cleaning-runs/{run_id}/preview")
     assert preview.status_code == 200
-    assert preview.json()["records"] >= 48
+    assert preview.json()["records"] >= 2080
 
     feature_set = client.post(
         "/api/v1/features/build",
@@ -114,7 +118,7 @@ def test_ml_lifecycle_executes_dataset_clean_feature_train_asset_flow() -> None:
     )
     assert feature_set.status_code == 201
     feature_payload = feature_set.json()
-    assert feature_payload["rows_count"] >= 12
+    assert feature_payload["rows_count"] >= 500
     assert feature_payload["train_rows"] > 0
     feature_set_id = feature_payload["feature_set_id"]
 

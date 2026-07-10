@@ -29,8 +29,12 @@ def test_openapi_schema_is_available_when_docs_are_enabled() -> None:
     assert response.json()["info"]["title"] == "Aquaculture Digital Twin Backend"
 
 
-def test_vercel_entrypoint_exports_fastapi_app() -> None:
-    from api.main import app
+def test_real_model_routes_are_exposed_by_the_vm_app() -> None:
+    app = create_app(Settings(environment="test", enable_docs=True))
+    paths = TestClient(app).get("/openapi.json").json()["paths"]
 
-    assert app.title == "Aquaculture Digital Twin Backend"
-    assert app.openapi_url == "/openapi.json"
+    assert "/api/v1/ponds/{pond_id}/models/svm-od/train" in paths
+    assert "/api/v1/ponds/{pond_id}/models/svm-od/forecast" in paths
+    assert "/api/v1/ponds/{pond_id}/models/oxygen/status" in paths
+    assert "/api/v1/ponds/{pond_id}/models/tilapia-growth" in paths
+    assert "/api/v1/ponds/{pond_id}/ai/dashboard" in paths

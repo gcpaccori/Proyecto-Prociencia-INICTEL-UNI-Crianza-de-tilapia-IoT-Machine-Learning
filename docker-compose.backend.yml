@@ -1,0 +1,22 @@
+services:
+  aquaculture_backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aquaculture_backend
+    restart: unless-stopped
+    environment:
+      AQUA_ENVIRONMENT: production
+      AQUA_ENABLE_DOCS: "true"
+      AQUA_LOG_LEVEL: INFO
+      AQUA_STORE_BACKEND: mysql
+      AQUA_DATABASE_URL: ${AQUA_DATABASE_URL:?AQUA_DATABASE_URL is required}
+      AQUA_LEGACY_DATABASE_NAME: ${AQUA_LEGACY_DATABASE_NAME:-sismapiscis}
+    ports:
+      - "8000:8000"
+    networks:
+      - sismapiscis_laravel
+
+networks:
+  sismapiscis_laravel:
+    external: true

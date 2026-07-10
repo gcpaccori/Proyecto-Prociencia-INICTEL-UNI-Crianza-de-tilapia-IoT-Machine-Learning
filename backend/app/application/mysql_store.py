@@ -55,6 +55,30 @@ class MySQLBackendStore:
         with self.engine.begin() as connection:
             for statement in SCHEMA_STATEMENTS:
                 connection.execute(text(statement))
+            for metadata in VERIFIED_VARIABLE_METADATA:
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO variable_metadata (
+                            variable_code, raw_unit, standard_unit, minimum_valid,
+                            maximum_valid, sensor_resolution, verified_at, verified_by
+                        )
+                        VALUES (
+                            :variable_code, :raw_unit, :standard_unit, :minimum_valid,
+                            :maximum_valid, :sensor_resolution, :verified_at, :verified_by
+                        )
+                        ON DUPLICATE KEY UPDATE
+                            raw_unit = VALUES(raw_unit),
+                            standard_unit = VALUES(standard_unit),
+                            minimum_valid = VALUES(minimum_valid),
+                            maximum_valid = VALUES(maximum_valid),
+                            sensor_resolution = VALUES(sensor_resolution),
+                            verified_at = VALUES(verified_at),
+                            verified_by = VALUES(verified_by)
+                        """
+                    ),
+                    metadata,
+                )
         self.sync_legacy_data(force=True)
 
     def sync_legacy_data(self, force: bool = False) -> None:
@@ -211,7 +235,7 @@ class MySQLBackendStore:
                         )
                         SELECT
                             CONCAT('LEGACY-RAW-', pa.id, '-', :variable_code),
-                            COALESCE(pa.fecha_medicion, pa.created_at, UTC_TIMESTAMP()),
+                            COALESCE(pa.created_at, pa.fecha_medicion, UTC_TIMESTAMP()),
                             CONCAT('LEGACY-FARM-', p.piscigranja_id),
                             CONCAT('LEGACY-POND-', pa.piscina_id),
                             CONCAT('LEGACY-SENSOR-', pa.piscina_id, '-', :variable_code),
@@ -222,7 +246,8 @@ class MySQLBackendStore:
                                 'source_database', :legacy_database,
                                 'source_table', 'parametro_aguas',
                                 'source_id', pa.id,
-                                'source_column', :source_column
+                                'source_column', :source_column,
+                                'timestamp_column', 'created_at'
                             ),
                             'legacy_mysql',
                             COALESCE(pa.created_at, UTC_TIMESTAMP())
@@ -231,6 +256,11 @@ class MySQLBackendStore:
                         WHERE pa.piscina_id IS NOT NULL
                           AND pa.{source_column} IS NOT NULL
                           AND pa.deleted_at IS NULL
+                        ON DUPLICATE KEY UPDATE
+                            time = VALUES(time),
+                            raw_value = VALUES(raw_value),
+                            raw_unit = VALUES(raw_unit),
+                            raw_payload = VALUES(raw_payload)
                         """
                     ),
                     {
@@ -251,14 +281,14 @@ class MySQLBackendStore:
                         SELECT
                             CONCAT('LEGACY-CLEAN-', pa.id, '-', :variable_code),
                             CONCAT('LEGACY-RAW-', pa.id, '-', :variable_code),
-                            COALESCE(pa.fecha_medicion, pa.created_at, UTC_TIMESTAMP()),
+                            COALESCE(pa.created_at, pa.fecha_medicion, UTC_TIMESTAMP()),
                             CONCAT('LEGACY-FARM-', p.piscigranja_id),
                             CONCAT('LEGACY-POND-', pa.piscina_id),
                             CONCAT('LEGACY-SENSOR-', pa.piscina_id, '-', :variable_code),
                             :variable_code,
                             pa.{source_column},
                             :unit,
-                            'legacy_valid',
+                            'legacy_unvalidated',
                             'accepted',
                             'legacy_pass_through_no_unit_conversion',
                             COALESCE(pa.created_at, UTC_TIMESTAMP())
@@ -267,6 +297,13 @@ class MySQLBackendStore:
                         WHERE pa.piscina_id IS NOT NULL
                           AND pa.{source_column} IS NOT NULL
                           AND pa.deleted_at IS NULL
+                        ON DUPLICATE KEY UPDATE
+                            time = VALUES(time),
+                            clean_value = VALUES(clean_value),
+                            standard_unit = VALUES(standard_unit),
+                            quality_flag = VALUES(quality_flag),
+                            validation_status = VALUES(validation_status),
+                            cleaning_method = VALUES(cleaning_method)
                         """
                     ),
                     {
@@ -1280,6 +1317,74 @@ class MySQLBackendStore:
         )
         return [self._prediction_from_row(row) for row in rows]
 
+    def get_variable_metadata(self, variable_code: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            "SELECT * FROM variable_metadata WHERE variable_code = :variable_code",
+            {"variable_code": variable_code},
+        )
+
+    def save_model_forecast(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO model_forecasts (
+                        forecast_id, pond_id, model_code, asset_id, issued_at,
+                        target_time, input_window_start, input_window_end,
+                        predicted_variable, predicted_value, unit, observed_value,
+                        absolute_error, quality_json, payload_json, created_at
+                    )
+                    VALUES (
+                        :forecast_id, :pond_id, :model_code, :asset_id, :issued_at,
+                        :target_time, :input_window_start, :input_window_end,
+                        :predicted_variable, :predicted_value, :unit, :observed_value,
+                        :absolute_error, :quality_json, :payload_json, :created_at
+                    )
+                    ON DUPLICATE KEY UPDATE
+                        observed_value = VALUES(observed_value),
+                        absolute_error = VALUES(absolute_error),
+                        quality_json = VALUES(quality_json),
+                        payload_json = VALUES(payload_json)
+                    """
+                ),
+                {
+                    **payload,
+                    "quality_json": json.dumps(payload.get("quality_json", {})),
+                    "payload_json": json.dumps(payload.get("payload_json", {})),
+                },
+            )
+        return payload
+
+    def latest_model_forecast(
+        self,
+        pond_id: str,
+        model_code: str,
+    ) -> dict[str, Any] | None:
+        row = self._fetch_one(
+            """
+            SELECT * FROM model_forecasts
+            WHERE pond_id = :pond_id AND model_code = :model_code
+            ORDER BY issued_at DESC
+            LIMIT 1
+            """,
+            {"pond_id": pond_id, "model_code": model_code},
+        )
+        if row:
+            row["quality_json"] = self._json(row.get("quality_json"))
+            row["payload_json"] = self._json(row.get("payload_json"))
+        return row
+
+    def latest_biometric_sample(self, pond_id: str) -> dict[str, Any] | None:
+        return self._fetch_one(
+            """
+            SELECT * FROM fish_biometric_samples
+            WHERE pond_id = :pond_id
+            ORDER BY sampled_at DESC
+            LIMIT 1
+            """,
+            {"pond_id": pond_id},
+        )
+
     def _list_snapshots(self, pond_id: str | None = None) -> list[DigitalTwinSnapshot]:
         if pond_id is None:
             rows = self._fetch_all(
@@ -1493,11 +1598,67 @@ LEGACY_WATER_VARIABLES = [
     ("temperatura", "water_temperature_c", "degC"),
     ("ph", "ph", "pH"),
     ("oxigeno_disuelto", "dissolved_oxygen_mg_l", "mg/L"),
-    ("ion_nitrato", "nitrate_ion", "source_unit"),
+    ("ion_nitrato", "nitrate_ion", "mg/L"),
+]
+
+
+VERIFIED_VARIABLE_METADATA = [
+    {
+        "variable_code": "water_temperature_c",
+        "raw_unit": "degC",
+        "standard_unit": "degC",
+        "minimum_valid": None,
+        "maximum_valid": None,
+        "sensor_resolution": 0.01,
+        "verified_at": datetime(2026, 7, 10),
+        "verified_by": "legacy_schema_decimal_resolution",
+    },
+    {
+        "variable_code": "ph",
+        "raw_unit": "pH",
+        "standard_unit": "pH",
+        "minimum_valid": 0.0,
+        "maximum_valid": 14.0,
+        "sensor_resolution": 0.01,
+        "verified_at": datetime(2026, 7, 10),
+        "verified_by": "physical_domain_and_legacy_schema",
+    },
+    {
+        "variable_code": "dissolved_oxygen_mg_l",
+        "raw_unit": "mg/L",
+        "standard_unit": "mg/L",
+        "minimum_valid": 0.0,
+        "maximum_valid": None,
+        "sensor_resolution": 0.01,
+        "verified_at": datetime(2026, 7, 10),
+        "verified_by": "legacy_schema_migration_comment",
+    },
+    {
+        "variable_code": "nitrate_ion",
+        "raw_unit": "mg/L",
+        "standard_unit": "mg/L",
+        "minimum_valid": None,
+        "maximum_valid": None,
+        "sensor_resolution": 0.01,
+        "verified_at": datetime(2026, 7, 10),
+        "verified_by": "laravel_migration_2025_08_23_160001_comment",
+    },
 ]
 
 
 SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS variable_metadata (
+        variable_code VARCHAR(128) PRIMARY KEY,
+        raw_unit VARCHAR(64) NOT NULL,
+        standard_unit VARCHAR(64) NOT NULL,
+        minimum_valid DOUBLE,
+        maximum_valid DOUBLE,
+        sensor_resolution DOUBLE,
+        verified_at DATETIME,
+        verified_by VARCHAR(255)
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS farms (
         id VARCHAR(128) PRIMARY KEY,
@@ -1721,6 +1882,41 @@ SCHEMA_STATEMENTS = [
         created_at DATETIME NOT NULL,
         INDEX ix_model_asset_predictions_model_time (model_code, created_at),
         INDEX ix_model_asset_predictions_asset_time (asset_id, created_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_forecasts (
+        forecast_id VARCHAR(160) PRIMARY KEY,
+        pond_id VARCHAR(128) NOT NULL,
+        model_code VARCHAR(128) NOT NULL,
+        asset_id VARCHAR(160),
+        issued_at DATETIME NOT NULL,
+        target_time DATETIME NOT NULL,
+        input_window_start DATETIME NOT NULL,
+        input_window_end DATETIME NOT NULL,
+        predicted_variable VARCHAR(128) NOT NULL,
+        predicted_value DOUBLE NOT NULL,
+        unit VARCHAR(64) NOT NULL,
+        observed_value DOUBLE,
+        absolute_error DOUBLE,
+        quality_json JSON NOT NULL,
+        payload_json JSON NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX ix_forecast_pond_target (pond_id, target_time),
+        INDEX ix_forecast_model_time (model_code, issued_at)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS fish_biometric_samples (
+        sample_id VARCHAR(160) PRIMARY KEY,
+        pond_id VARCHAR(128) NOT NULL,
+        sampled_at DATETIME NOT NULL,
+        average_length_mm DOUBLE,
+        average_weight_g DOUBLE,
+        sample_size INT,
+        source VARCHAR(64) NOT NULL,
+        created_at DATETIME NOT NULL,
+        INDEX ix_biometric_pond_time (pond_id, sampled_at)
     )
     """,
     """

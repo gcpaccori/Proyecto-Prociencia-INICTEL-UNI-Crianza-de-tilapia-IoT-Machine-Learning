@@ -31,10 +31,10 @@ from backend.app.domains.ml_lifecycle import (
     TrainingJobRequest,
 )
 from backend.app.models_engine.ml.preprocessing import (
-    linear_interpolate_missing,
+    hampel_flags,
+    interpolate_short_internal_gaps,
     pearson_correlation,
     regression_metrics,
-    sigma3_flags,
     temporal_train_validation_test_split,
 )
 from backend.app.models_engine.ml.tabular_algorithms import (
@@ -44,7 +44,7 @@ from backend.app.models_engine.ml.tabular_algorithms import (
 )
 
 
-MIN_TRAINING_RECORDS = 8
+MIN_TRAINING_RECORDS = 500
 
 
 TRAINABLE_MODEL_VARIABLES: dict[str, list[str]] = {
@@ -255,47 +255,53 @@ class MLLifecycleService:
         interpolated_points = 0
         outliers_detected = 0
         normalized_points = 0
+        duplicates_removed = 0
+        groups = sorted({(row.pond_id, row.variable_code) for row in raw_rows})
 
-        for variable_code in variable_codes:
+        for group_pond_id, variable_code in groups:
             rows = sorted(
-                [row for row in raw_rows if row.variable_code == variable_code],
+                [
+                    row
+                    for row in raw_rows
+                    if row.pond_id == group_pond_id and row.variable_code == variable_code
+                ],
                 key=lambda item: item.time,
             )
             if not rows:
                 continue
+            unique_rows = []
+            seen: set[tuple[object, object]] = set()
+            for row in rows:
+                key = (row.time, row.raw_value)
+                if key in seen:
+                    duplicates_removed += 1
+                    continue
+                seen.add(key)
+                unique_rows.append(row)
+            rows = unique_rows
             values: list[float | None] = [
                 float(row.raw_value) if row.raw_value is not None else None for row in rows
             ]
+            minimum, maximum = self._physical_bounds(variable_code)
+            invalid_flags = [
+                value is not None
+                and ((minimum is not None and value < minimum) or (maximum is not None and value > maximum))
+                for value in values
+            ]
+            values = [None if invalid else value for value, invalid in zip(values, invalid_flags)]
+            robust_flags = hampel_flags(values) if len(values) >= 5 else [False] * len(values)
+            outliers_detected += sum(robust_flags) + sum(invalid_flags)
+            values = [None if flagged else value for value, flagged in zip(values, robust_flags)]
             if request.apply_interpolation:
-                interpolated_values = linear_interpolate_missing(values)
-                interpolated_points += sum(1 for value in values if value is None)
+                interpolated_values, interpolated_indexes = interpolate_short_internal_gaps(values, max_gap=2)
+                interpolated_points += len(interpolated_indexes)
             else:
-                interpolated_values = [float(value or 0.0) for value in values]
-            flags = ["cleaned" for _ in interpolated_values]
-            if request.apply_sigma3 and len(interpolated_values) >= 3:
-                sigma_flags = sigma3_flags(interpolated_values)
-                outliers_detected += sum(1 for flag in sigma_flags if flag)
-                if any(sigma_flags):
-                    repaired = [
-                        None if is_outlier else value
-                        for value, is_outlier in zip(interpolated_values, sigma_flags)
-                    ]
-                    interpolated_values = linear_interpolate_missing(repaired)
-                    flags = [
-                        "sigma3_corrected" if is_outlier else flag
-                        for flag, is_outlier in zip(flags, sigma_flags)
-                    ]
-            if request.apply_minmax and interpolated_values:
-                minimum = min(interpolated_values)
-                maximum = max(interpolated_values)
-                if maximum != minimum:
-                    interpolated_values = [
-                        (value - minimum) / (maximum - minimum)
-                        for value in interpolated_values
-                    ]
-                    flags = ["minmax_normalized" for _ in flags]
-                    normalized_points += len(interpolated_values)
-            for raw, clean_value, flag in zip(rows, interpolated_values, flags):
+                interpolated_values = values
+                interpolated_indexes = set()
+            for index, (raw, clean_value) in enumerate(zip(rows, interpolated_values)):
+                if clean_value is None:
+                    continue
+                flag = "interpolated_short_gap" if index in interpolated_indexes else "cleaned_valid"
                 out_rows.append(
                     CleanMeasurementRead(
                         id=f"{run_id}-{raw.id}",
@@ -329,14 +335,14 @@ class MLLifecycleService:
                     details={"interpolated_points": interpolated_points},
                 ),
                 CleaningRunStepRead(
-                    step_name="sigma3",
-                    status="completed" if request.apply_sigma3 else "skipped",
-                    details={"outliers_detected": outliers_detected},
+                            step_name="hampel_mad",
+                            status="completed",
+                            details={"outliers_detected": outliers_detected},
                 ),
                 CleaningRunStepRead(
-                    step_name="minmax",
-                    status="completed" if request.apply_minmax else "skipped",
-                    details={"normalized_points": normalized_points},
+                            step_name="deduplication",
+                            status="completed",
+                            details={"duplicates_removed": duplicates_removed},
                 ),
                 CleaningRunStepRead(
                     step_name="persist_clean_measurements",
@@ -389,22 +395,34 @@ class MLLifecycleService:
         ]
         if missing:
             raise ValueError(f"variables without clean data: {', '.join(missing)}")
-        min_len = min(len(values) for values in series_by_variable.values())
-        if min_len < request.window_size + request.horizon:
+        values_by_time = {
+            variable: {timestamp: value for timestamp, value in values}
+            for variable, values in series_by_variable.items()
+        }
+        common_times = sorted(
+            set.intersection(*(set(values) for values in values_by_time.values()))
+        )
+        if len(common_times) < request.window_size + request.horizon:
             raise ValueError("not enough aligned rows for requested window and horizon")
 
         feature_rows: list[dict[str, object]] = []
-        for index in range(0, min_len - request.window_size - request.horizon + 1):
-            row: dict[str, object] = {"row_index": index}
+        for index in range(0, len(common_times) - request.window_size - request.horizon + 1):
+            window_times = common_times[index : index + request.window_size]
+            row: dict[str, object] = {
+                "row_index": index,
+                "input_window_end": window_times[-1],
+            }
             for variable in request.feature_variables:
-                values = series_by_variable[variable][index : index + request.window_size]
+                values = [values_by_time[variable][timestamp] for timestamp in window_times]
                 if request.window_size == 1:
                     row[variable] = values[-1]
                 else:
                     for offset, value in enumerate(values):
                         row[f"{variable}_t_minus_{request.window_size - offset - 1}"] = value
             target_index = index + request.window_size + request.horizon - 1
-            row["target"] = series_by_variable[request.target_variable][target_index]
+            target_time = common_times[target_index]
+            row["target_time"] = target_time
+            row["target"] = values_by_time[request.target_variable][target_time]
             feature_rows.append(row)
 
         split = temporal_train_validation_test_split(
@@ -1151,7 +1169,7 @@ class MLLifecycleService:
         pond_id: str,
         variable_code: str,
         cleaning_run_id: str | None = None,
-    ) -> list[float]:
+    ) -> list[tuple[datetime, float]]:
         rows = []
         if cleaning_run_id is not None:
             list_run_measurements = getattr(self.store, "list_cleaning_run_measurements", None)
@@ -1168,7 +1186,18 @@ class MLLifecycleService:
                 variable_code=variable_code,
                 limit=100000,
             )
-        return [float(row.clean_value) for row in sorted(rows, key=lambda item: item.time)]
+        return [
+            (row.time, float(row.clean_value))
+            for row in sorted(rows, key=lambda item: item.time)
+        ]
+
+    @staticmethod
+    def _physical_bounds(variable_code: str) -> tuple[float | None, float | None]:
+        if variable_code == "ph":
+            return 0.0, 14.0
+        if variable_code == "dissolved_oxygen_mg_l":
+            return 0.0, None
+        return None, None
 
     def _event(
         self,
