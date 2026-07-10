@@ -473,6 +473,7 @@ class RealModelsService:
                 [forecast["issued_at"], forecast["current_do_mg_l"]],
                 [forecast["target_time"], forecast["forecast_do_mg_l"]],
             ]
+        latest_candidate = forecast.get("latest_candidate") or {}
         warnings = list(prepared["quality"].get("warnings", []))
         if forecast.get("status") != "ready":
             warnings.append("El SVM no tiene un artefacto activo que supere la persistencia.")
@@ -495,9 +496,9 @@ class RealModelsService:
                 "unit": "mg/L",
                 "engine": "FastAPI / scikit-learn",
                 "source": "MySQL sismapiscis.parametro_aguas",
-                "asset_id": forecast.get("asset_id"),
-                "version": forecast.get("asset_version"),
-                "metrics": forecast.get("metrics", {}),
+                "asset_id": forecast.get("asset_id") or latest_candidate.get("asset_id"),
+                "version": forecast.get("asset_version") or latest_candidate.get("version"),
+                "metrics": forecast.get("metrics") or latest_candidate.get("metrics_json", {}),
                 "forecast": [
                     {
                         "timestamp": forecast.get("target_time"),
