@@ -85,3 +85,23 @@ def test_formula_relationship_chart_marks_the_current_measurement() -> None:
     assert chart["series"][1]["type"] == "scatter"
     assert chart["series"][1]["data"][0][0] == 26.0
     assert chart["series"][1]["data"][0][1] > 0
+
+
+def test_forecast_chart_focuses_on_the_future_segment_and_marks_it() -> None:
+    chart = RealModelsService._chart(
+        "Proyeccion",
+        [
+            RealModelsService._series(
+                "Prueba IA +1h",
+                [["2026-01-01T00:00:00", 6.0], ["2026-01-01T01:00:00", 6.2]],
+                "#f59e0b",
+                dashed=True,
+            )
+        ],
+        "mg/L",
+        focus_from="2025-12-31T21:00:00",
+    )
+
+    assert chart["dataZoom"][0]["startValue"] == "2025-12-31T21:00:00"
+    assert chart["series"][0]["showSymbol"] is True
+    assert chart["series"][0]["markPoint"]["data"][0]["coord"][1] == 6.2

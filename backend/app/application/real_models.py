@@ -507,6 +507,12 @@ class RealModelsService:
                 [display_forecast["issued_at"], display_forecast["current_do_mg_l"]],
                 [display_forecast["target_time"], display_forecast["forecast_do_mg_l"]],
             ]
+        short_projection_focus = None
+        if forecast_points:
+            issued_at = datetime.fromisoformat(str(display_forecast["issued_at"]))
+            short_projection_focus = (
+                issued_at - timedelta(hours=min(window_hours, 3))
+            ).isoformat()
         oxygen_projection_points = self._oxygen_projection_points(
             latest_od,
             display_forecast,
@@ -534,6 +540,7 @@ class RealModelsService:
                 ),
             ],
             "mg/L",
+            focus_from=short_projection_focus,
         )
         latest_candidate_payload = latest_candidate.get("artifact_payload", {})
         activation_criteria = latest_candidate_payload.get("activation_criteria", {})
@@ -620,6 +627,7 @@ class RealModelsService:
                         ),
                     ],
                     "%",
+                    focus_from=short_projection_focus,
                 ),
                 "chart_description": "Azul: porcentaje real de saturacion. La linea punteada convierte la estimacion de OD a una hora en porcentaje de saturacion.",
                 "relationship": {
@@ -666,6 +674,10 @@ class RealModelsService:
                         ),
                     ],
                     "mm/dia",
+                    focus_from=(
+                        latest_od["timestamp"]
+                        - timedelta(hours=min(window_hours, 24))
+                    ).isoformat(),
                 ),
                 "chart_description": "La linea continua usa la temperatura real de cada momento. La punteada mantiene la temperatura actual durante el periodo elegido.",
                 "relationship": {
@@ -1312,7 +1324,15 @@ class RealModelsService:
         title: str,
         series: list[dict[str, object]],
         unit: str,
+        focus_from: str | None = None,
     ) -> dict[str, object]:
+        data_zoom = [
+            {"type": "inside", "xAxisIndex": [0], "filterMode": "none"},
+            {"type": "slider", "bottom": 16, "height": 22, "filterMode": "none"},
+        ]
+        if focus_from:
+            for zoom in data_zoom:
+                zoom["startValue"] = focus_from
         return {
             "title": {"text": title, "left": 12, "textStyle": {"fontSize": 14}},
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
@@ -1328,10 +1348,7 @@ class RealModelsService:
             "grid": {"top": 78, "left": 64, "right": 36, "bottom": 66},
             "xAxis": {"type": "time"},
             "yAxis": {"type": "value", "name": unit, "scale": True},
-            "dataZoom": [
-                {"type": "inside", "xAxisIndex": [0], "filterMode": "none"},
-                {"type": "slider", "bottom": 16, "height": 22, "filterMode": "none"},
-            ],
+            "dataZoom": data_zoom,
             "series": series,
         }
 
@@ -1342,15 +1359,32 @@ class RealModelsService:
         color: str,
         dashed: bool = False,
     ) -> dict[str, object]:
-        return {
+        series = {
             "name": name,
             "type": "line",
-            "showSymbol": False,
+            "showSymbol": dashed,
+            "symbol": "diamond" if dashed else "circle",
+            "symbolSize": 12 if dashed else 6,
             "sampling": "lttb",
             "data": data,
             "lineStyle": {"width": 2, "type": "dashed" if dashed else "solid"},
             "itemStyle": {"color": color},
+            "z": 5 if dashed else 2,
         }
+        if dashed and data:
+            series["markPoint"] = {
+                "symbol": "diamond",
+                "symbolSize": 16,
+                "itemStyle": {"color": color},
+                "label": {
+                    "show": True,
+                    "formatter": "Proyeccion",
+                    "position": "top",
+                    "color": color,
+                },
+                "data": [{"coord": data[-1]}],
+            }
+        return series
 
     def _require_persistent_store(self) -> None:
         required = (
