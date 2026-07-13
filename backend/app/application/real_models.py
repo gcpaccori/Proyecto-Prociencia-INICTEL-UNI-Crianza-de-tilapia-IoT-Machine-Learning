@@ -990,7 +990,7 @@ class RealModelsService:
                 "chart": svm_chart,
                 "chart_description": "Azul: oxigeno medido. La linea punteada muestra la estimacion a una hora del modelo IA entrenado.",
                 "relationship": {
-                    "description": "Las barras muestran que variables cambian mas el error de la SVM al alterarlas. Una barra mayor indica mayor peso para la estimacion.",
+                    "description": "Las barras comparan cuanto cambia la proyeccion IA al permutar cada grupo de entradas reales. La variable mas sensible se muestra como 100 %; no es una correlacion de Pearson.",
                     "chart": self._svm_influence_chart(candidates[0] if candidates else None, prepared["feature_rows"]),
                 },
                 "formula": {
@@ -1865,7 +1865,7 @@ class RealModelsService:
             "nitrate_ion": "Ion nitrato",
             "hour_": "Hora del dia",
         }
-        influence = {label: 0.0 for label in labels.values()}
+        influence_raw = {label: 0.0 for label in labels.values()}
         if asset and feature_rows:
             try:
                 feature_names = list(asset.artifact_payload["feature_names"])
@@ -1875,12 +1875,7 @@ class RealModelsService:
                     [float(row[name]) for name in feature_names]
                     for row in selected
                 ]
-                target = [float(row["target"]) for row in selected]
                 baseline_predictions = estimator.predict(matrix)
-                baseline_mae = sum(
-                    abs(float(prediction) - actual)
-                    for prediction, actual in zip(baseline_predictions, target)
-                ) / len(target)
                 rng = random.Random(42)
                 for prefix, label in labels.items():
                     indexes = [
@@ -1896,23 +1891,27 @@ class RealModelsService:
                         for feature_index in indexes:
                             shuffled[row_index][feature_index] = matrix[source_index][feature_index]
                     predictions = estimator.predict(shuffled)
-                    mae = sum(
-                        abs(float(prediction) - actual)
-                        for prediction, actual in zip(predictions, target)
-                    ) / len(target)
-                    influence[label] = round(max(0.0, mae - baseline_mae), 4)
+                    influence_raw[label] = sum(
+                        abs(float(prediction) - float(baseline))
+                        for prediction, baseline in zip(predictions, baseline_predictions)
+                    ) / len(baseline_predictions)
             except (KeyError, TypeError, ValueError, pickle.UnpicklingError):
                 pass
+        maximum = max(influence_raw.values(), default=0.0)
+        influence = {
+            label: round((value / maximum) * 100.0, 1) if maximum > 0 else 0.0
+            for label, value in influence_raw.items()
+        }
         ordered = sorted(influence.items(), key=lambda item: item[1])
         return {
-            "title": {"text": "Peso de las variables en la IA", "left": 12, "textStyle": {"fontSize": 14}},
+            "title": {"text": "Sensibilidad de variables en la SVM", "left": 12, "textStyle": {"fontSize": 14}},
             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
             "grid": {"top": 48, "left": 118, "right": 38, "bottom": 28},
-            "xAxis": {"type": "value", "name": "Aumento del error (mg/L)"},
+            "xAxis": {"type": "value", "name": "Sensibilidad relativa (%)", "max": 100},
             "yAxis": {"type": "category", "data": [item[0] for item in ordered]},
             "series": [
                 {
-                    "name": "Peso en la estimacion",
+                    "name": "Cambio relativo de la proyeccion",
                     "type": "bar",
                     "data": [item[1] for item in ordered],
                     "itemStyle": {"color": "#0d6efd"},

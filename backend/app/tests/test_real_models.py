@@ -1,5 +1,8 @@
+import base64
 import math
+import pickle
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from backend.app.models_engine.deterministic.dissolved_oxygen import oxygen_status
 from backend.app.models_engine.deterministic.growth import (
@@ -23,6 +26,11 @@ VARIABLES = [
     "dissolved_oxygen_mg_l",
     "nitrate_ion",
 ]
+
+
+class InfluenceEstimator:
+    def predict(self, matrix: list[list[float]]) -> list[float]:
+        return [row[0] * 2.0 + row[1] * 0.5 for row in matrix]
 
 
 def test_short_gap_interpolation_never_fills_edges_or_long_gaps() -> None:
@@ -112,6 +120,27 @@ def test_formula_relationship_chart_marks_the_current_measurement() -> None:
     assert chart["series"][1]["type"] == "scatter"
     assert chart["series"][1]["data"][0][0] == 26.0
     assert chart["series"][1]["data"][0][1] > 0
+
+
+def test_svm_influence_chart_reports_prediction_sensitivity_not_signed_error() -> None:
+    estimator = InfluenceEstimator()
+    asset = SimpleNamespace(
+        artifact_payload={
+            "feature_names": ["water_temperature_c", "ph"],
+            "estimator_b64": base64.b64encode(pickle.dumps(estimator)).decode("ascii"),
+        }
+    )
+    rows = [
+        {"water_temperature_c": temperature, "ph": 7.0 + index * 0.1, "target": 0.0}
+        for index, temperature in enumerate([24.0, 25.0, 28.0, 30.0])
+    ]
+
+    chart = RealModelsService._svm_influence_chart(asset, rows)
+
+    values = chart["series"][0]["data"]
+    assert max(values) == 100.0
+    assert any(value > 0 for value in values)
+    assert chart["xAxis"]["name"] == "Sensibilidad relativa (%)"
 
 
 def test_forecast_chart_focuses_on_the_future_segment_and_marks_it() -> None:
