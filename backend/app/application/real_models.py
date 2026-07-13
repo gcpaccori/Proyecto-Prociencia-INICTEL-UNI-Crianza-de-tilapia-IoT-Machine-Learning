@@ -28,6 +28,7 @@ from backend.app.models_engine.ml.preprocessing import (
     build_svm_od_feature_rows,
     hampel_flags,
     interpolate_short_internal_gaps,
+    pearson_correlation,
     regression_metrics,
 )
 
@@ -429,11 +430,20 @@ class RealModelsService:
             },
         }
 
-    def dashboard(self, pond_id: str) -> dict[str, object]:
+    def dashboard(
+        self,
+        pond_id: str,
+        window_hours: int = 168,
+        growth_projection_days: int = 7,
+    ) -> dict[str, object]:
         prepared = self._prepare_dataset(pond_id, persist_cleaning=False, limit=100000)
         forecast = self.forecast_svm_od(pond_id, prepared)
         status = self.oxygen_status_for_pond(pond_id, prepared, forecast)
-        growth = self.tilapia_growth(pond_id, prepared)
+        growth = self.tilapia_growth(
+            pond_id,
+            prepared,
+            projection_days=growth_projection_days,
+        )
         latest_od = self._latest_observed(
             prepared["aligned"],
             ["water_temperature_c", "dissolved_oxygen_mg_l"],
@@ -444,27 +454,45 @@ class RealModelsService:
         }
         dynamic = {"status": "not_ready", "missing_real_inputs": DYNAMIC_OXYGEN_INPUTS}
 
+        history_rows = self._history_window(prepared["aligned"], window_hours)
         observed_do = [
             [row["timestamp"].isoformat(), float(row["values"]["dissolved_oxygen_mg_l"])]
-            for row in prepared["aligned"]
+            for row in history_rows
             if row["values"].get("dissolved_oxygen_mg_l") is not None
             and "dissolved_oxygen_mg_l" not in row.get("invalid_variables", set())
         ]
         saturation_history = [
             [row["timestamp"].isoformat(), do_saturation(float(row["values"]["water_temperature_c"]))]
-            for row in prepared["aligned"]
+            for row in history_rows
             if row["values"].get("water_temperature_c") is not None
             and "water_temperature_c" not in row.get("invalid_variables", set())
         ]
         growth_history = []
-        for row in prepared["aligned"]:
+        growth_correlation_rows = []
+        oxygen_correlation_rows = []
+        for row in history_rows:
             temperature = row["values"].get("water_temperature_c")
+            observed = row["values"].get("dissolved_oxygen_mg_l")
+            if temperature is not None and observed is not None:
+                oxygen_correlation_rows.append(
+                    {
+                        "temperature_c": float(temperature),
+                        "od_medido_mg_l": float(observed),
+                        "od_saturacion_mg_l": do_saturation(float(temperature)),
+                    }
+                )
             if temperature is None:
                 continue
             calculated = tilapia_growth_temperature(float(temperature))
             if calculated["daily_length_gain_mm_day"] is not None:
                 growth_history.append(
                     [row["timestamp"].isoformat(), calculated["daily_length_gain_mm_day"]]
+                )
+                growth_correlation_rows.append(
+                    {
+                        "temperature_c": float(temperature),
+                        "ganancia_mm_dia": float(calculated["daily_length_gain_mm_day"]),
+                    }
                 )
 
         forecast_points = []
@@ -478,7 +506,7 @@ class RealModelsService:
         if forecast.get("status") != "ready":
             warnings.append("El SVM no tiene un artefacto activo que supere la persistencia.")
 
-        combined_chart = self._chart(
+        svm_chart = self._chart(
             "Oxigeno disuelto observado y proyeccion SVM a 1 hora",
             [
                 self._series("OD observado", observed_do, "#0d6efd"),
@@ -486,12 +514,25 @@ class RealModelsService:
             ],
             "mg/L",
         )
+        latest_candidate_payload = latest_candidate.get("artifact_payload", {})
+        activation_criteria = latest_candidate_payload.get("activation_criteria", {})
+        svm_ready = forecast.get("status") == "ready"
+        svm_usage = {
+            "status": "en_uso" if svm_ready else "candidato_bloqueado",
+            "label": "Usado en proyeccion productiva" if svm_ready else "No usado en proyeccion productiva",
+            "detail": (
+                "El artefacto activo genera la estimacion de OD a una hora."
+                if svm_ready
+                else "El candidato queda visible para auditoria, pero no alimenta proyecciones porque no supero la referencia de persistencia."
+            ),
+            "activation_criteria": activation_criteria,
+        }
         models = [
             {
                 "code": SVM_MODEL_CODE,
                 "name": "Proyeccion de oxigeno disuelto a 1 hora",
                 "message": "SVR temporal entrenado con temperatura, pH, OD e ion nitrato reales.",
-                "status": "asset_activo" if forecast.get("status") == "ready" else "sin_datos",
+                "status": "asset_activo" if svm_ready else "candidato_bloqueado",
                 "current_value": latest_od["values"]["dissolved_oxygen_mg_l"],
                 "unit": "mg/L",
                 "engine": "FastAPI / scikit-learn",
@@ -506,7 +547,28 @@ class RealModelsService:
                         "value": forecast.get("forecast_do_mg_l"),
                     }
                 ] if forecast.get("status") == "ready" else [],
-                "chart": combined_chart,
+                "chart": svm_chart,
+                "correlation_chart": self._correlation_chart(
+                    "Matriz de correlacion Pearson: variables de la SVM",
+                    history_rows,
+                    {
+                        "water_temperature_c": "Temperatura (C)",
+                        "ph": "pH",
+                        "dissolved_oxygen_mg_l": "OD (mg/L)",
+                        "nitrate_ion": "Ion nitrato (mg/L)",
+                    },
+                ),
+                "formula": {
+                    "expression": "OD(t+1h) = SVR_RBF(StandardScaler(X_t))",
+                    "detail": "X_t contiene temperatura, pH, OD e ion nitrato actuales; sus retardos 1, 2, 3 y 6; medias, desviacion estandar y hora ciclica.",
+                    "kernel": "K(x, x') = exp(-gamma ||x - x'||^2)",
+                    "conditions": [
+                        "Horizonte fijo validado: 1 hora.",
+                        "Entrenamiento temporal 70/15/15 con TimeSeriesSplit de 5 particiones.",
+                        "Solo se activa si MAE mejora la persistencia y R2 de prueba es positivo.",
+                    ],
+                },
+                "usage": svm_usage,
                 "traceability": forecast.get("traceability", {}),
             },
             {
@@ -533,6 +595,28 @@ class RealModelsService:
                     ],
                     "mg/L",
                 ),
+                "correlation_chart": self._correlation_chart(
+                    "Matriz de correlacion Pearson: estado de oxigeno",
+                    oxygen_correlation_rows,
+                    {
+                        "temperature_c": "Temperatura (C)",
+                        "od_medido_mg_l": "OD medido (mg/L)",
+                        "od_saturacion_mg_l": "OD saturacion (mg/L)",
+                    },
+                ),
+                "formula": {
+                    "expression": "OD_sat(T) = 14.589 - 0.4T + 0.008T^2 - 0.0000661T^3",
+                    "detail": "Saturacion (%) = 100 x OD medido / OD_sat(T); deficit = OD_sat(T) - OD medido.",
+                    "conditions": [
+                        "Usa exclusivamente temperatura y OD medidos en MySQL local.",
+                        "No extrapola una proyeccion temporal ni requiere entrenamiento.",
+                    ],
+                },
+                "usage": {
+                    "status": "en_uso",
+                    "label": "Calculado con la ultima medicion real",
+                    "detail": "El resultado se actualiza con cada consulta usando temperatura y OD observados.",
+                },
                 "traceability": status["traceability"],
             },
             {
@@ -547,12 +631,29 @@ class RealModelsService:
                 "asset_id": None,
                 "version": "formula-v1",
                 "metrics": {"r2": growth["source_r2"]},
-                "forecast": [],
+                "forecast": self._growth_forecast_rows(growth),
                 "chart": self._chart(
                     "Ganancia diaria estimada desde temperatura real",
                     [self._series("Ganancia diaria", growth_history, "#7c3aed")],
                     "mm/dia",
                 ),
+                "correlation_chart": self._correlation_chart(
+                    "Matriz de correlacion Pearson: crecimiento por temperatura",
+                    growth_correlation_rows,
+                    {
+                        "temperature_c": "Temperatura (C)",
+                        "ganancia_mm_dia": "Ganancia (mm/dia)",
+                    },
+                ),
+                "formula": {
+                    "expression": "Delta L = -1.6707 + 0.09682T (mm/dia)",
+                    "detail": "Si existe una biometria real: L(t+d) = L(t) + d x Delta L.",
+                    "conditions": [
+                        "Dominio validado para tilapia: 21 a 30 C.",
+                        "La longitud y peso futuros solo se calculan con una longitud inicial biometrica real.",
+                    ],
+                },
+                "usage": self._growth_usage(growth),
                 "traceability": growth["traceability"],
             },
         ]
@@ -582,7 +683,15 @@ class RealModelsService:
                 "projection_method": "SVM 1h + formulas publicadas",
                 "uses_all_points": True,
                 "generated_data_used": False,
+                "chart_window_hours": window_hours,
                 "cleaning_run_id": prepared["cleaning_run"].run_id if prepared.get("cleaning_run") else None,
+            },
+            "filters": {
+                "window_hours": window_hours,
+                "window_label": self._window_label(window_hours),
+                "svm_horizon_label": "1 hora (horizonte validado)",
+                "growth_projection_days": growth_projection_days,
+                "growth_projection_label": f"{growth_projection_days} dias",
             },
             "latest": {
                 "timestamp": latest_od["timestamp"].isoformat(),
@@ -597,6 +706,7 @@ class RealModelsService:
                 "from": prepared["quality"]["first_timestamp"],
                 "to": prepared["quality"]["last_timestamp"],
                 "historical_points": len(observed_do),
+                "all_historical_points": prepared["quality"]["aligned_points"],
                 "forecast_points": len(forecast_points),
                 "training_rows": {
                     SVM_MODEL_CODE: active_asset.artifact_payload.get("valid_windows", 0)
@@ -617,7 +727,6 @@ class RealModelsService:
                     {"model_code": GROWTH_MODEL_CODE, "algorithm": "formula", "training_rows": 0},
                 ],
             },
-            "combined_chart": combined_chart,
             "models": models,
         }
 
@@ -884,6 +993,147 @@ class RealModelsService:
         return payload
 
     @staticmethod
+    def _history_window(
+        aligned_rows: list[dict[str, object]],
+        window_hours: int,
+    ) -> list[dict[str, object]]:
+        if not aligned_rows:
+            return []
+        latest_time = aligned_rows[-1]["timestamp"]
+        cutoff = latest_time - timedelta(hours=window_hours)
+        selected = [row for row in aligned_rows if row["timestamp"] >= cutoff]
+        return selected or aligned_rows[-min(len(aligned_rows), 250):]
+
+    @staticmethod
+    def _window_label(window_hours: int) -> str:
+        labels = {
+            6: "Ultimas 6 horas",
+            24: "Ultimas 24 horas",
+            168: "Ultimos 7 dias",
+            720: "Ultimos 30 dias",
+            2160: "Ultimos 90 dias",
+        }
+        return labels.get(window_hours, f"Ultimas {window_hours} horas")
+
+    @staticmethod
+    def _growth_forecast_rows(growth: dict[str, object]) -> list[dict[str, object]]:
+        projection = growth.get("length_projection")
+        if not isinstance(projection, dict):
+            return []
+        return [
+            {
+                "label": f"Longitud en {projection['projection_days']} dias",
+                "value": projection["projected_length_mm"],
+                "unit": "mm",
+            },
+            {
+                "label": f"Peso estimado en {projection['projection_days']} dias",
+                "value": projection["projected_weight_g"],
+                "unit": "g",
+            },
+        ]
+
+    @staticmethod
+    def _growth_usage(growth: dict[str, object]) -> dict[str, str]:
+        if growth.get("status") != "calculated":
+            return {
+                "status": "fuera_de_dominio",
+                "label": "No calculado fuera del dominio validado",
+                "detail": "La temperatura actual esta fuera del intervalo de 21 a 30 C.",
+            }
+        if growth.get("length_projection") is None:
+            return {
+                "status": "calculo_parcial",
+                "label": "Ganancia diaria calculada; proyeccion bloqueada",
+                "detail": "Falta una longitud inicial de una muestra biometrica real para proyectar longitud y peso.",
+            }
+        return {
+            "status": "en_uso",
+            "label": "Proyeccion calculada desde biometria real",
+            "detail": "La longitud y el peso se proyectan para el horizonte seleccionado.",
+        }
+
+    @staticmethod
+    def _correlation_chart(
+        title: str,
+        source_rows: list[dict[str, object]],
+        variables: dict[str, str],
+    ) -> dict[str, object]:
+        codes = list(variables)
+        samples: list[dict[str, float]] = []
+        for row in source_rows:
+            values = row.get("values", row)
+            invalid = row.get("invalid_variables", set())
+            if not isinstance(values, dict):
+                continue
+            sample: dict[str, float] = {}
+            for code in codes:
+                value = values.get(code)
+                if value is None or code in invalid:
+                    break
+                try:
+                    sample[code] = float(value)
+                except (TypeError, ValueError):
+                    break
+            if len(sample) == len(codes):
+                samples.append(sample)
+
+        heatmap_data = []
+        for y_index, y_code in enumerate(codes):
+            y_values = [sample[y_code] for sample in samples]
+            for x_index, x_code in enumerate(codes):
+                x_values = [sample[x_code] for sample in samples]
+                correlation = pearson_correlation(x_values, y_values) if samples else 0.0
+                heatmap_data.append([x_index, y_index, round(correlation, 3)])
+
+        labels = [variables[code] for code in codes]
+        return {
+            "title": {
+                "text": title,
+                "subtext": f"Pearson sobre {len(samples)} observaciones reales de la ventana elegida",
+                "left": 12,
+                "textStyle": {"fontSize": 14},
+                "subtextStyle": {"fontSize": 11},
+            },
+            "tooltip": {"trigger": "item"},
+            "grid": {"top": 82, "left": 128, "right": 36, "bottom": 72},
+            "xAxis": {
+                "type": "category",
+                "data": labels,
+                "splitArea": {"show": True},
+                "axisLabel": {"rotate": 20, "interval": 0},
+            },
+            "yAxis": {
+                "type": "category",
+                "data": labels,
+                "splitArea": {"show": True},
+            },
+            "visualMap": {
+                "min": -1,
+                "max": 1,
+                "calculable": True,
+                "orient": "horizontal",
+                "left": "center",
+                "bottom": 8,
+                "inRange": {"color": ["#2166ac", "#f7f7f7", "#b2182b"]},
+            },
+            "series": [
+                {
+                    "name": "Correlacion Pearson",
+                    "type": "heatmap",
+                    "data": heatmap_data,
+                    "label": {"show": True, "formatter": "{c}"},
+                    "emphasis": {
+                        "itemStyle": {
+                            "shadowBlur": 10,
+                            "shadowColor": "rgba(0, 0, 0, 0.35)",
+                        }
+                    },
+                }
+            ],
+        }
+
+    @staticmethod
     def _chart(
         title: str,
         series: list[dict[str, object]],
@@ -891,14 +1141,22 @@ class RealModelsService:
     ) -> dict[str, object]:
         return {
             "title": {"text": title, "left": 12, "textStyle": {"fontSize": 14}},
-            "tooltip": {"trigger": "axis"},
+            "tooltip": {"trigger": "axis", "axisPointer": {"type": "cross"}},
             "legend": {"top": 34, "type": "scroll"},
-            "grid": {"top": 78, "left": 64, "right": 36, "bottom": 58},
+            "toolbox": {
+                "right": 16,
+                "feature": {
+                    "dataZoom": {"yAxisIndex": "none"},
+                    "restore": {},
+                    "saveAsImage": {},
+                },
+            },
+            "grid": {"top": 78, "left": 64, "right": 36, "bottom": 66},
             "xAxis": {"type": "time"},
             "yAxis": {"type": "value", "name": unit, "scale": True},
             "dataZoom": [
-                {"type": "inside", "xAxisIndex": [0]},
-                {"type": "slider", "bottom": 12, "height": 22},
+                {"type": "inside", "xAxisIndex": [0], "filterMode": "none"},
+                {"type": "slider", "bottom": 16, "height": 22, "filterMode": "none"},
             ],
             "series": series,
         }

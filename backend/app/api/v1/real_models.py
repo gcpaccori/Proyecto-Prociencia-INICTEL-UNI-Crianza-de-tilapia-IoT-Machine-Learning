@@ -11,7 +11,7 @@ from backend.app.application.real_models import RealModelsService
 
 router = APIRouter()
 _DASHBOARD_CACHE_SECONDS = 45.0
-_dashboard_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_dashboard_cache: dict[tuple[str, int, int], tuple[float, dict[str, object]]] = {}
 
 
 class DynamicOxygenRequest(BaseModel):
@@ -47,7 +47,7 @@ def _run(callable_: object) -> dict[str, object]:
 def train_svm_od(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
     resolved_pond_id = _legacy_pond_id(pond_id)
     result = _run(lambda: _service(store).train_svm_od(resolved_pond_id))
-    _dashboard_cache.pop(resolved_pond_id, None)
+    _dashboard_cache.clear()
     return result
 
 
@@ -95,11 +95,23 @@ def get_tilapia_growth(
 
 
 @router.get("/ponds/{pond_id}/ai/dashboard")
-def get_ai_dashboard(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
+def get_ai_dashboard(
+    pond_id: str,
+    window_hours: int = Query(default=168, ge=6, le=2160),
+    growth_projection_days: int = Query(default=7, ge=1, le=365),
+    store: object = Depends(get_store),
+) -> dict[str, object]:
     resolved_pond_id = _legacy_pond_id(pond_id)
-    cached = _dashboard_cache.get(resolved_pond_id)
+    cache_key = (resolved_pond_id, window_hours, growth_projection_days)
+    cached = _dashboard_cache.get(cache_key)
     if cached and monotonic() - cached[0] < _DASHBOARD_CACHE_SECONDS:
         return cached[1]
-    response = _run(lambda: _service(store).dashboard(resolved_pond_id))
-    _dashboard_cache[resolved_pond_id] = (monotonic(), response)
+    response = _run(
+        lambda: _service(store).dashboard(
+            resolved_pond_id,
+            window_hours=window_hours,
+            growth_projection_days=growth_projection_days,
+        )
+    )
+    _dashboard_cache[cache_key] = (monotonic(), response)
     return response

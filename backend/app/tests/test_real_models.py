@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.app.models_engine.deterministic.dissolved_oxygen import oxygen_status
 from backend.app.models_engine.deterministic.growth import tilapia_growth_temperature
+from backend.app.application.real_models import RealModelsService
 from backend.app.models_engine.ml.preprocessing import (
     align_sensor_series,
     build_latest_svm_od_features,
@@ -68,3 +69,19 @@ def test_deterministic_models_use_only_supplied_real_measurements() -> None:
     outside_domain = tilapia_growth_temperature(20.0)
     assert outside_domain["status"] == "out_of_validated_domain"
     assert outside_domain["daily_length_gain_mm_day"] is None
+
+
+def test_correlation_chart_is_built_from_real_variable_rows() -> None:
+    chart = RealModelsService._correlation_chart(
+        "Correlacion de prueba",
+        [
+            {"temperature_c": 24.0, "od_mg_l": 5.1},
+            {"temperature_c": 25.0, "od_mg_l": 5.5},
+            {"temperature_c": 26.0, "od_mg_l": 5.9},
+        ],
+        {"temperature_c": "Temperatura (C)", "od_mg_l": "OD (mg/L)"},
+    )
+
+    assert chart["series"][0]["type"] == "heatmap"
+    assert len(chart["series"][0]["data"]) == 4
+    assert chart["series"][0]["data"][1][2] == 1.0
