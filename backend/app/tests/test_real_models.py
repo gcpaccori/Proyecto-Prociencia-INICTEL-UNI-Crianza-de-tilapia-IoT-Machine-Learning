@@ -71,17 +71,17 @@ def test_deterministic_models_use_only_supplied_real_measurements() -> None:
     assert outside_domain["daily_length_gain_mm_day"] is None
 
 
-def test_correlation_chart_is_built_from_real_variable_rows() -> None:
-    chart = RealModelsService._correlation_chart(
-        "Correlacion de prueba",
-        [
-            {"temperature_c": 24.0, "od_mg_l": 5.1},
-            {"temperature_c": 25.0, "od_mg_l": 5.5},
-            {"temperature_c": 26.0, "od_mg_l": 5.9},
-        ],
-        {"temperature_c": "Temperatura (C)", "od_mg_l": "OD (mg/L)"},
-    )
+def test_formula_relationship_chart_marks_the_current_measurement() -> None:
+    latest = {
+        "values": {
+            "water_temperature_c": 26.0,
+            "dissolved_oxygen_mg_l": 5.9,
+        }
+    }
 
-    assert chart["series"][0]["type"] == "heatmap"
-    assert len(chart["series"][0]["data"]) == 4
-    assert chart["series"][0]["data"][1][2] == 1.0
+    chart = RealModelsService._oxygen_temperature_chart([24.0, 25.0, 26.0], latest)
+
+    assert chart["series"][0]["type"] == "line"
+    assert chart["series"][1]["type"] == "scatter"
+    assert chart["series"][1]["data"][0][0] == 26.0
+    assert chart["series"][1]["data"][0][1] > 0
