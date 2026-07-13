@@ -61,6 +61,24 @@ def svm_od_metrics(pond_id: str, store: object = Depends(get_store)) -> dict[str
     return _run(lambda: _service(store).svm_metrics(_legacy_pond_id(pond_id)))
 
 
+@router.post("/ponds/{pond_id}/models/ica-svm/train", status_code=status.HTTP_201_CREATED)
+def train_ica_svm(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
+    resolved_pond_id = _legacy_pond_id(pond_id)
+    result = _run(lambda: _service(store).train_ica_svm(resolved_pond_id))
+    _dashboard_cache.clear()
+    return result
+
+
+@router.get("/ponds/{pond_id}/models/ica")
+def get_water_quality_index(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
+    return _run(lambda: _service(store).water_quality_index_for_pond(_legacy_pond_id(pond_id)))
+
+
+@router.get("/ponds/{pond_id}/models/ica-svm")
+def get_ica_svm(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
+    return _run(lambda: _service(store).ica_svm_classification(_legacy_pond_id(pond_id)))
+
+
 @router.get("/ponds/{pond_id}/models/oxygen/status")
 def get_oxygen_status(pond_id: str, store: object = Depends(get_store)) -> dict[str, object]:
     return _run(lambda: _service(store).oxygen_status_for_pond(_legacy_pond_id(pond_id)))

@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from backend.app.models_engine.deterministic.dissolved_oxygen import oxygen_status
 from backend.app.models_engine.deterministic.growth import tilapia_growth_temperature
+from backend.app.models_engine.deterministic.water_quality import water_quality_index
 from backend.app.application.real_models import RealModelsService
 from backend.app.models_engine.ml.preprocessing import (
     align_sensor_series,
@@ -10,6 +11,7 @@ from backend.app.models_engine.ml.preprocessing import (
     build_svm_od_feature_rows,
     interpolate_short_internal_gaps,
 )
+from backend.app.models_engine.ml.ica_classifier import build_ica_training_rows
 
 
 VARIABLES = [
@@ -105,3 +107,48 @@ def test_forecast_chart_focuses_on_the_future_segment_and_marks_it() -> None:
     assert chart["dataZoom"][0]["startValue"] == "2025-12-31T21:00:00"
     assert chart["series"][0]["showSymbol"] is True
     assert chart["series"][0]["markPoint"]["data"][0]["coord"][1] == 6.2
+
+
+def test_water_quality_index_uses_documented_weights_and_ranges() -> None:
+    excellent = water_quality_index(28.5, 7.4, 6.2, 12.0)
+    assert excellent["ica"] == 100.0
+    assert excellent["classification"] == "Excelente"
+
+    low_oxygen = water_quality_index(28.0, 7.4, 2.5, 12.0)
+    assert low_oxygen["ica"] == 82.5
+    assert low_oxygen["classification"] == "Buena"
+    assert low_oxygen["components"][2]["normalized_score"] == 50.0
+
+
+def test_ica_training_rows_keep_only_clean_simultaneous_sensor_readings() -> None:
+    started_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    aligned = [
+        {
+            "timestamp": started_at,
+            "values": {
+                "water_temperature_c": 28.0,
+                "ph": 7.4,
+                "dissolved_oxygen_mg_l": 6.2,
+                "nitrate_ion": 12.0,
+            },
+            "invalid_variables": set(),
+            "interpolated_variables": set(),
+        },
+        {
+            "timestamp": started_at + timedelta(minutes=15),
+            "values": {
+                "water_temperature_c": 28.0,
+                "ph": 7.4,
+                "dissolved_oxygen_mg_l": 6.2,
+                "nitrate_ion": 12.0,
+            },
+            "invalid_variables": {"nitrate_ion"},
+            "interpolated_variables": set(),
+        },
+    ]
+
+    rows = build_ica_training_rows(aligned)
+
+    assert len(rows) == 1
+    assert rows[0]["target_label"] == "Excelente"
+    assert rows[0]["dissolved_oxygen_mg_l"] == 6.2

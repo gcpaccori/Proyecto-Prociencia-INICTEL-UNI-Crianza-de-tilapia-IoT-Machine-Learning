@@ -23,6 +23,10 @@ from backend.app.models_engine.deterministic.dissolved_oxygen import (
     update_do_0d,
 )
 from backend.app.models_engine.deterministic.growth import tilapia_growth_temperature
+from backend.app.models_engine.deterministic.water_quality import (
+    biofloc_water_quality_readiness,
+    water_quality_index,
+)
 from backend.app.models_engine.ml.preprocessing import (
     align_sensor_series,
     build_latest_svm_od_features,
@@ -31,11 +35,19 @@ from backend.app.models_engine.ml.preprocessing import (
     interpolate_short_internal_gaps,
     regression_metrics,
 )
+from backend.app.models_engine.ml.ica_classifier import (
+    ICA_CLASS_ORDER,
+    ICA_FEATURE_NAMES,
+    build_ica_training_rows,
+)
 
 
 SVM_MODEL_CODE = "SVM_OD_FORECAST_1H"
 OXYGEN_MODEL_CODE = "OXYGEN_STATUS_MODEL"
 GROWTH_MODEL_CODE = "TILAPIA_GROWTH_TEMPERATURE"
+WATER_QUALITY_ICA_MODEL_CODE = "WATER_QUALITY_INDEX_ICA"
+WATER_QUALITY_ICA_SVM_MODEL_CODE = "WATER_QUALITY_INDEX_ICA_SVM"
+BIOFLOC_WATER_QUALITY_MODEL_CODE = "BIOFLOC_WATER_QUALITY"
 REQUIRED_VARIABLES = [
     "water_temperature_c",
     "ph",
@@ -331,6 +343,194 @@ class RealModelsService:
             )
         return response
 
+    def train_ica_svm(self, pond_id: str) -> dict[str, object]:
+        """Train an SVC that estimates the documented ICA classification.
+
+        The training target is the deterministic ICA class, not an independent
+        field inspection. This keeps the artifact useful for comparison while
+        preserving the documented formula as the source of truth.
+        """
+        self._require_persistent_store()
+        prepared = self._prepare_dataset(pond_id, persist_cleaning=True, limit=100000)
+        feature_rows = build_ica_training_rows(prepared["aligned"])
+        if len(feature_rows) < MIN_VALID_WINDOWS:
+            raise ValueError(
+                f"se requieren al menos {MIN_VALID_WINDOWS} lecturas ICA validas; "
+                f"solo hay {len(feature_rows)}"
+            )
+        feature_set = self._save_feature_set(
+            pond_id=pond_id,
+            cleaning_run_id=prepared["cleaning_run"].run_id,
+            feature_rows=feature_rows,
+            feature_names=ICA_FEATURE_NAMES,
+            horizon_steps=0,
+            target_variable="ica_formula_class",
+            target_unit=None,
+            feature_variables=ICA_FEATURE_NAMES,
+            window_size=1,
+        )
+        job = TrainingJobRead(
+            job_id=self._new_id("TRAINJOB"),
+            model_code=WATER_QUALITY_ICA_SVM_MODEL_CODE,
+            feature_set_id=feature_set.feature_set_id,
+            status="queued",
+            hyperparameters={
+                "search": "GridSearchCV",
+                "cross_validation": "TimeSeriesSplit(n_splits=5)",
+                "target": "ica_formula_class",
+            },
+        )
+        self.store.save_training_job(job)
+        self._event(job.job_id, "queued", "Entrenamiento SVM ICA registrado.")
+        try:
+            from sklearn.base import clone
+            from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+            from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+            from sklearn.pipeline import Pipeline
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.svm import SVC
+
+            running = job.model_copy(update={"status": "running", "started_at": self._now()})
+            self.store.save_training_job(running)
+            x = [[float(row[name]) for name in ICA_FEATURE_NAMES] for row in feature_rows]
+            y = [int(row["target"]) for row in feature_rows]
+            train_end = int(len(x) * 0.70)
+            validation_end = train_end + int(len(x) * 0.15)
+            train_x, train_y = x[:train_end], y[:train_end]
+            validation_x, validation_y = x[train_end:validation_end], y[train_end:validation_end]
+            test_x, test_y = x[validation_end:], y[validation_end:]
+            if len(set(train_y)) < 2:
+                raise ValueError("las etiquetas ICA historicas no contienen al menos dos clases")
+
+            pipeline = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("svc", SVC(kernel="rbf", class_weight="balanced")),
+                ]
+            )
+            search = GridSearchCV(
+                pipeline,
+                {"svc__C": [1, 10, 50], "svc__gamma": ["scale", 0.01]},
+                scoring="f1_weighted",
+                cv=TimeSeriesSplit(n_splits=5),
+                n_jobs=-1,
+                refit=True,
+                error_score="raise",
+            )
+            search.fit(train_x, train_y)
+            validation_predictions = [int(value) for value in search.predict(validation_x)]
+            estimator = clone(search.best_estimator_)
+            estimator.fit(train_x + validation_x, train_y + validation_y)
+            test_predictions = [int(value) for value in estimator.predict(test_x)]
+            metrics = {
+                "accuracy": float(accuracy_score(test_y, test_predictions)),
+                "f1_weighted": float(f1_score(test_y, test_predictions, average="weighted", zero_division=0)),
+                "validation_accuracy": float(accuracy_score(validation_y, validation_predictions)),
+                "validation_f1_weighted": float(f1_score(validation_y, validation_predictions, average="weighted", zero_division=0)),
+                "cv_best_f1_weighted": float(search.best_score_),
+            }
+            activation_criteria = {
+                "minimum_500_rows": len(feature_rows) >= MIN_VALID_WINDOWS,
+                "two_or_more_classes": len(set(y)) >= 2,
+                "test_f1_at_least_0_80": metrics["f1_weighted"] >= 0.80,
+                "artifact_and_metrics_stored": True,
+            }
+            version = self._next_version(WATER_QUALITY_ICA_SVM_MODEL_CODE)
+            asset = ModelAssetRead(
+                asset_id=self._new_id("ASSET"),
+                model_code=WATER_QUALITY_ICA_SVM_MODEL_CODE,
+                version=version,
+                artifact_path=f"model_assets/{WATER_QUALITY_ICA_SVM_MODEL_CODE}/{version}.pkl",
+                artifact_format="pickle_base64",
+                artifact_payload={
+                    "algorithm": "Pipeline(StandardScaler, SVC-rbf)",
+                    "model_code": WATER_QUALITY_ICA_SVM_MODEL_CODE,
+                    "feature_names": ICA_FEATURE_NAMES,
+                    "target_variable": "ica_formula_class",
+                    "target_origin": "WATER_QUALITY_INDEX_ICA formula labels",
+                    "class_order": ICA_CLASS_ORDER,
+                    "estimator_b64": base64.b64encode(pickle.dumps(estimator)).decode("ascii"),
+                    "best_params": search.best_params_,
+                    "valid_rows": len(feature_rows),
+                    "input_window_start": feature_rows[0]["issued_at"].isoformat(),
+                    "input_window_end": feature_rows[-1]["issued_at"].isoformat(),
+                    "confusion_matrix": confusion_matrix(test_y, test_predictions, labels=list(range(len(ICA_CLASS_ORDER)))).tolist(),
+                    "activation_criteria": activation_criteria,
+                },
+                feature_set_id=feature_set.feature_set_id,
+                training_job_id=job.job_id,
+                metrics_json=metrics,
+                status="candidate",
+            )
+            self.store.save_model_asset(asset)
+            if all(activation_criteria.values()):
+                asset = self.store.activate_model_asset(asset.asset_id)
+            completed = running.model_copy(
+                update={
+                    "status": "completed",
+                    "finished_at": self._now(),
+                    "metrics": metrics,
+                    "asset_id": asset.asset_id,
+                    "hyperparameters": search.best_params_,
+                }
+            )
+            self.store.save_training_job(completed)
+            self._event(
+                job.job_id,
+                "completed",
+                "SVM ICA entrenado con clases derivadas de la formula documentada.",
+                {"asset_id": asset.asset_id, "asset_status": asset.status},
+            )
+            return {
+                "status": "completed",
+                "model_code": WATER_QUALITY_ICA_SVM_MODEL_CODE,
+                "pond_id": pond_id,
+                "job": completed.model_dump(mode="json"),
+                "asset": self._public_asset(asset),
+                "activation_criteria": activation_criteria,
+                "data_quality": prepared["quality"],
+            }
+        except Exception as exc:
+            failed = job.model_copy(
+                update={"status": "failed", "finished_at": self._now(), "error_message": str(exc)}
+            )
+            self.store.save_training_job(failed)
+            self._event(job.job_id, "failed", str(exc))
+            raise
+
+    def ica_svm_classification(
+        self,
+        pond_id: str,
+        prepared: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        self._require_persistent_store()
+        asset = self.store.active_model_asset(WATER_QUALITY_ICA_SVM_MODEL_CODE)
+        if asset is None:
+            candidates = self.store.list_model_assets(model_code=WATER_QUALITY_ICA_SVM_MODEL_CODE)
+            asset = candidates[0] if candidates else None
+        if asset is None:
+            return {
+                "status": "not_trained",
+                "detail": "Aun no existe un artefacto SVM para clasificar el ICA documentado.",
+            }
+        prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
+        latest = self._latest_observed(prepared["aligned"], ICA_FEATURE_NAMES)
+        estimator = pickle.loads(base64.b64decode(asset.artifact_payload["estimator_b64"]))
+        values = latest["values"]
+        predicted_code = int(
+            estimator.predict([[float(values[name]) for name in ICA_FEATURE_NAMES]])[0]
+        )
+        labels = list(asset.artifact_payload["class_order"])
+        return {
+            "status": "trained",
+            "classification": labels[predicted_code],
+            "asset_id": asset.asset_id,
+            "version": asset.version,
+            "metrics": asset.metrics_json,
+            "detail": "SVM entrenada con lecturas reales y etiquetas ICA calculadas por la formula documentada.",
+            "target_origin": asset.artifact_payload["target_origin"],
+        }
+
     def svm_metrics(self, pond_id: str) -> dict[str, object]:
         active = self.store.active_model_asset(SVM_MODEL_CODE)
         candidates = self.store.list_model_assets(model_code=SVM_MODEL_CODE)
@@ -456,6 +656,10 @@ class RealModelsService:
             prepared,
             projection_days=growth_projection_days,
         )
+        water_quality = self.water_quality_index_for_pond(pond_id, prepared)
+        ica_svm = self.ica_svm_classification(pond_id, prepared)
+        biometric_assessment = self.store.latest_biometric_assessment(pond_id)
+        biometric_context = self._biometric_context(biometric_assessment)
         growth["requested_projection_days"] = growth_projection_days
         latest_od = self._latest_observed(
             prepared["aligned"],
@@ -488,6 +692,7 @@ class RealModelsService:
             and "dissolved_oxygen_mg_l" not in row.get("invalid_variables", set())
         ]
         growth_history = []
+        ica_history = []
         temperatures = []
         for row in history_rows:
             temperature = row["values"].get("water_temperature_c")
@@ -499,6 +704,22 @@ class RealModelsService:
             if calculated["daily_length_gain_mm_day"] is not None:
                 growth_history.append(
                     [row["timestamp"].isoformat(), calculated["daily_length_gain_mm_day"]]
+                )
+            values = row["values"]
+            if all(
+                values.get(code) is not None and code not in row.get("invalid_variables", set())
+                for code in REQUIRED_VARIABLES
+            ):
+                ica_history.append(
+                    [
+                        row["timestamp"].isoformat(),
+                        water_quality_index(
+                            float(values["water_temperature_c"]),
+                            float(values["ph"]),
+                            float(values["dissolved_oxygen_mg_l"]),
+                            float(values["nitrate_ion"]),
+                        )["ica"],
+                    ]
                 )
 
         forecast_points = []
@@ -526,14 +747,17 @@ class RealModelsService:
         latest_candidate = self._public_asset(candidates[0]) if candidates else {}
         warnings = list(prepared["quality"].get("warnings", []))
         if productive_forecast.get("status") != "ready":
-            warnings.append("La estimacion SVM visible es de prueba; aun no se usa para decisiones productivas.")
+            warnings.append(
+                "La SVM esta entrenada y se muestra en evaluacion tecnica; "
+                "la persistencia aun tiene menor error para uso automatico."
+            )
 
         svm_chart = self._chart(
             "Oxigeno disuelto: medicion y estimacion a una hora",
             [
                 self._series("OD observado", observed_do, "#0d6efd"),
                 self._series(
-                    "Estimacion IA +1h" if display_forecast.get("status") == "ready" else "Prueba IA +1h",
+                    "Estimacion IA +1h",
                     forecast_points,
                     "#20a854" if display_forecast.get("status") == "ready" else "#f59e0b",
                     dashed=True,
@@ -547,13 +771,28 @@ class RealModelsService:
         svm_ready = productive_forecast.get("status") == "ready"
         svm_usage = {
             "status": "en_uso" if svm_ready else "candidato_bloqueado",
-            "label": "Usado en proyeccion productiva" if svm_ready else "No usado en proyeccion productiva",
+            "label": "Usado en proyeccion productiva" if svm_ready else "Modelo entrenado en evaluacion tecnica",
             "detail": (
                 "El artefacto activo genera la estimacion de OD a una hora."
                 if svm_ready
-                else "Hay un modelo IA entrenado. Su estimacion se muestra como prueba y no activa alertas ni decisiones hasta superar la referencia de persistencia."
+                else "Hay un modelo IA entrenado. La persistencia conserva menor MAE, por eso la estimacion no activa alertas ni decisiones automaticas."
             ),
             "activation_criteria": activation_criteria,
+        }
+        ica_chart = self._chart(
+            "Indice de calidad de agua calculado con sensores reales",
+            [self._series("ICA", ica_history, "#14b8a6")],
+            "ICA",
+        )
+        ica_chart["series"][0]["markLine"] = {
+            "silent": True,
+            "lineStyle": {"type": "dashed", "color": "#94a3b8"},
+            "data": [
+                {"yAxis": 90, "name": "Excelente"},
+                {"yAxis": 70, "name": "Buena"},
+                {"yAxis": 50, "name": "Regular"},
+                {"yAxis": 25, "name": "Mala"},
+            ],
         }
         models = [
             {
@@ -571,7 +810,7 @@ class RealModelsService:
                 "forecast": [
                     {
                         "timestamp": display_forecast.get("target_time"),
-                        "label": "Proyeccion productiva +1 hora" if svm_ready else "Estimacion de prueba +1 hora",
+                        "label": "Proyeccion productiva +1 hora" if svm_ready else "Estimacion IA +1 hora",
                         "value": display_forecast.get("forecast_do_mg_l"),
                     }
                 ] if display_forecast.get("status") in {"ready", "candidate_test"} else [],
@@ -583,13 +822,18 @@ class RealModelsService:
                 },
                 "formula": {
                     "expression": "OD(t+1h) = SVR_RBF(StandardScaler(X_t))",
+                    "latex": r"\widehat{OD}_{t+1h}=\sum_{i=1}^{n}(\alpha_i-\alpha_i^*)e^{-\gamma\lVert x_i-x_t\rVert^2}+b",
                     "detail": "X_t contiene temperatura, pH, OD e ion nitrato actuales; sus retardos 1, 2, 3 y 6; medias, desviacion estandar y hora ciclica.",
                     "kernel": "K(x, x') = exp(-gamma ||x - x'||^2)",
                     "conditions": [
                         "Horizonte fijo validado: 1 hora.",
                         "Entrenamiento temporal 70/15/15 con TimeSeriesSplit de 5 particiones.",
-                        "Solo se activa si MAE mejora la persistencia y R2 de prueba es positivo.",
+                        "Solo se activa si MAE mejora la persistencia y R2 de evaluacion es positivo.",
                     ],
+                },
+                "origin": {
+                    "document": "Biometria1.docx, secciones 4.4 y 4.7; DIRECTIVA_CODEX_3_MODELOS_DATOS_REALES.md, seccion 2.",
+                    "data": "parametro_aguas: temperatura, pH, OD e ion nitrato; 14,997 ventanas validas.",
                 },
                 "usage": svm_usage,
                 "traceability": display_forecast.get("traceability", {}),
@@ -620,7 +864,7 @@ class RealModelsService:
                     [
                         self._series("Saturacion medida", saturation_history, "#0d6efd"),
                         self._series(
-                            "Estimacion a +1h" if svm_ready else "Prueba IA a +1h",
+                            "Estimacion IA a +1h",
                             oxygen_projection_points,
                             "#20a854" if svm_ready else "#f59e0b",
                             dashed=True,
@@ -636,11 +880,16 @@ class RealModelsService:
                 },
                 "formula": {
                     "expression": "OD_sat(T) = 14.589 - 0.4T + 0.008T^2 - 0.0000661T^3",
+                    "latex": r"OD_{sat}(T)=14.589-0.4T+0.008T^2-0.0000661T^3",
                     "detail": "Saturacion (%) = 100 x OD medido / OD_sat(T); deficit = OD_sat(T) - OD medido.",
                     "conditions": [
                         "Usa exclusivamente temperatura y OD medidos en MySQL local.",
                         "No extrapola una proyeccion temporal ni requiere entrenamiento.",
                     ],
+                },
+                "origin": {
+                    "document": "Informe016_Oxigeno_Disuelto y DIRECTIVA_CODEX_3_MODELOS_DATOS_REALES.md, seccion 3.",
+                    "data": "Ultima temperatura y OD limpios de parametro_aguas.",
                 },
                 "usage": {
                     "status": "en_uso",
@@ -686,14 +935,69 @@ class RealModelsService:
                 },
                 "formula": {
                     "expression": "Delta L = -1.6707 + 0.09682T (mm/dia)",
+                    "latex": r"\Delta L=-1.6707+0.09682T",
                     "detail": "Si existe una biometria real: L(t+d) = L(t) + d x Delta L.",
                     "conditions": [
                         "Dominio validado para tilapia: 21 a 30 C.",
                         "La longitud y peso futuros solo se calculan con una longitud inicial biometrica real.",
                     ],
                 },
+                "origin": {
+                    "document": "Informe017_Crecimiento_Alimentacion_ML y DIRECTIVA_CODEX_3_MODELOS_DATOS_REALES.md, seccion 4.",
+                    "data": "Temperatura de parametro_aguas y biometria real cuando existe.",
+                },
                 "usage": self._growth_usage(growth),
+                "biometric_context": biometric_context,
                 "traceability": growth["traceability"],
+            },
+            {
+                "code": WATER_QUALITY_ICA_MODEL_CODE,
+                "name": "Indice de calidad de agua",
+                "message": "Puntaje ponderado con temperatura, pH, oxigeno disuelto e ion nitrato reales.",
+                "status": "calculado",
+                "current_value": water_quality["ica"],
+                "unit": "/100",
+                "engine": "FastAPI / formula documentada",
+                "source": "Biometria1.docx, seccion 4.1",
+                "asset_id": None,
+                "version": "ica-formula-v1",
+                "metrics": {},
+                "forecast": [
+                    {
+                        "label": f"Clasificacion actual: {water_quality['classification']}",
+                        "value": water_quality["ica"],
+                        "unit": "/100",
+                    }
+                ],
+                "chart": ica_chart,
+                "chart_description": "La linea muestra el ICA calculado en cada lectura valida; las lineas horizontales separan sus niveles de interpretacion.",
+                "relationship": {
+                    "description": "Cada barra es el aporte ponderado de una variable al ICA actual. Oxigeno disuelto tiene el mayor peso documentado.",
+                    "chart": self._ica_components_chart(water_quality["components"]),
+                },
+                "formula": {
+                    "expression": "ICA = 0.25Q_T + 0.25Q_pH + 0.35Q_OD + 0.15Q_NO3",
+                    "latex": r"\mathrm{ICA}=0.25Q_T+0.25Q_{pH}+0.35Q_{OD}+0.15Q_{NO_3}",
+                    "detail": "Cada Q se normaliza de 0 a 100 con los rangos del documento; el resultado actual se clasifica como " + str(water_quality["classification"]) + ".",
+                    "conditions": [
+                        "Temperatura optima: 26 a 30 C; pH optimo: 6.5 a 8.5.",
+                        "OD obtiene 100 desde 5 mg/L; nitrato obtiene 100 por debajo de 50 mg/L.",
+                        "Es un calculo deterministico: no necesita entrenar un artefacto.",
+                    ],
+                },
+                "origin": {
+                    "document": "Biometria1.docx, seccion 4.1.",
+                    "data": "Las cuatro lecturas limpias de parametro_aguas; no usa datos simulados.",
+                },
+                "usage": {
+                    "status": "en_uso",
+                    "label": f"Calidad actual: {water_quality['classification']}",
+                    "detail": "Se recalcula con la ultima lectura limpia de los cuatro sensores locales.",
+                },
+                "interpretation": water_quality["interpretation"],
+                "components": water_quality["components"],
+                "machine_learning": ica_svm,
+                "traceability": water_quality["traceability"],
             },
         ]
         active_asset = self.store.active_model_asset(SVM_MODEL_CODE)
@@ -716,15 +1020,18 @@ class RealModelsService:
                 "asset_id": display_asset.asset_id if display_asset else None,
                 "version": display_asset.version if display_asset else None,
                 "productive": active_asset is not None,
-                "estimated_as": "productiva" if active_asset else "prueba",
+                "estimated_as": "productiva" if active_asset else "evaluacion_tecnica",
                 "detail": (
                     "El modelo SVM entrenado se usa para la proyeccion productiva de OD a una hora."
                     if active_asset
-                    else "El modelo SVM esta entrenado y genera una estimacion de prueba visible; aun no se usa para alertas ni decisiones productivas."
+                    else "El modelo SVM esta entrenado y muestra su estimacion de OD a una hora; la persistencia aun tiene menor MAE para automatizar decisiones."
                 ) if display_asset else "No hay un artefacto SVM entrenado disponible.",
             },
             "oxygen_status": status,
             "tilapia_growth": growth,
+            "ica_svm": ica_svm,
+            "biometrics": biometric_context,
+            "biofloc_water_quality": self.biofloc_water_quality(),
             "dynamic_oxygen": dynamic,
             "data_quality": prepared["quality"],
             "warnings": warnings,
@@ -766,7 +1073,25 @@ class RealModelsService:
                 },
             },
             "lifecycle": {
-                "status": "production" if active_asset else "validation_required",
+                "status": "production" if active_asset else "evaluation",
+                "summary": [
+                    {
+                        "step": "Datos reales",
+                        "detail": "Temperatura, pH, OD e ion nitrato se leen de MySQL local.",
+                    },
+                    {
+                        "step": "Limpieza temporal",
+                        "detail": "Se eliminan duplicados, se aplican limites y Hampel/MAD; solo se interpolan huecos internos cortos.",
+                    },
+                    {
+                        "step": "Entrenamiento",
+                        "detail": "La SVR aprende OD a una hora con division cronologica y validacion temporal.",
+                    },
+                    {
+                        "step": "Uso",
+                        "detail": "La formula ICA y los modelos fisicos se calculan en cada consulta; la SVR se compara con persistencia antes de automatizar decisiones.",
+                    },
+                ],
                 "models": [
                     {
                         "model_code": SVM_MODEL_CODE,
@@ -777,6 +1102,12 @@ class RealModelsService:
                     },
                     {"model_code": OXYGEN_MODEL_CODE, "algorithm": "formula", "training_rows": 0},
                     {"model_code": GROWTH_MODEL_CODE, "algorithm": "formula", "training_rows": 0},
+                    {"model_code": WATER_QUALITY_ICA_MODEL_CODE, "algorithm": "formula", "training_rows": 0},
+                    {
+                        "model_code": WATER_QUALITY_ICA_SVM_MODEL_CODE,
+                        "algorithm": "StandardScaler + SVC RBF",
+                        "training_rows": ica_svm.get("metrics", {}).get("valid_rows", 0),
+                    },
                 ],
             },
             "models": models,
@@ -956,6 +1287,10 @@ class RealModelsService:
         feature_rows: list[dict[str, object]],
         feature_names: list[str],
         horizon_steps: int,
+        target_variable: str = "dissolved_oxygen_mg_l",
+        target_unit: str | None = "mg/L",
+        feature_variables: list[str] | None = None,
+        window_size: int = 7,
     ) -> FeatureSetRead:
         rows = []
         for source in feature_rows:
@@ -973,10 +1308,10 @@ class RealModelsService:
         feature_set = FeatureSetRead(
             feature_set_id=self._new_id("FEATURESET"),
             pond_id=pond_id,
-            target_variable="dissolved_oxygen_mg_l",
-            feature_variables=REQUIRED_VARIABLES,
+            target_variable=target_variable,
+            feature_variables=feature_variables or REQUIRED_VARIABLES,
             cleaning_run_id=cleaning_run_id,
-            window_size=7,
+            window_size=window_size,
             horizon=horizon_steps,
             rows_count=len(rows),
             train_rows=train_rows,
@@ -994,8 +1329,8 @@ class RealModelsService:
                 FeatureSetColumnRead(
                     name="target",
                     role="target",
-                    source_variable="dissolved_oxygen_mg_l",
-                    unit="mg/L",
+                    source_variable=target_variable,
+                    unit=target_unit,
                 ),
             ],
             rows=rows,
@@ -1019,8 +1354,8 @@ class RealModelsService:
             )
         )
 
-    def _next_version(self) -> str:
-        return f"v{len(self.store.list_model_assets(model_code=SVM_MODEL_CODE)) + 1}"
+    def _next_version(self, model_code: str = SVM_MODEL_CODE) -> str:
+        return f"v{len(self.store.list_model_assets(model_code=model_code)) + 1}"
 
     @staticmethod
     def _latest_observed(
@@ -1253,6 +1588,37 @@ class RealModelsService:
         )
 
     @staticmethod
+    def _ica_components_chart(components: list[dict[str, object]]) -> dict[str, object]:
+        labels = [str(component["variable"]) for component in components]
+        contributions = [
+            round(
+                float(component["normalized_score"]) * float(component["weight"]),
+                2,
+            )
+            for component in components
+        ]
+        return {
+            "title": {
+                "text": "Aporte de cada sensor al ICA actual",
+                "left": 12,
+                "textStyle": {"fontSize": 14},
+            },
+            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+            "grid": {"top": 56, "left": 52, "right": 24, "bottom": 48},
+            "xAxis": {"type": "category", "data": labels, "axisLabel": {"interval": 0}},
+            "yAxis": {"type": "value", "name": "Puntos ICA", "max": 35},
+            "series": [
+                {
+                    "name": "Aporte ponderado",
+                    "type": "bar",
+                    "data": contributions,
+                    "itemStyle": {"color": "#14b8a6"},
+                    "label": {"show": True, "position": "top"},
+                }
+            ],
+        }
+
+    @staticmethod
     def _svm_influence_chart(
         asset: ModelAssetRead | None,
         feature_rows: list[dict[str, object]],
@@ -1371,6 +1737,7 @@ class RealModelsService:
             "itemStyle": {"color": color},
             "z": 5 if dashed else 2,
         }
+
         if dashed and data:
             series["markPoint"] = {
                 "symbol": "diamond",
@@ -1385,6 +1752,86 @@ class RealModelsService:
                 "data": [{"coord": data[-1]}],
             }
         return series
+
+    @staticmethod
+    def _biometric_context(assessment: dict[str, object] | None) -> dict[str, object]:
+        interpretation = [
+            {"range": "Menor a 1.2", "label": "Excelente"},
+            {"range": "1.2 a 1.5", "label": "Muy buena"},
+            {"range": "1.5 a 1.8", "label": "Buena"},
+            {"range": "1.8 a 2.0", "label": "Regular"},
+            {"range": "Mayor a 2.0", "label": "Deficiente"},
+        ]
+        if not assessment:
+            return {
+                "available": False,
+                "detail": "No hay una biometria real vinculada a esta piscina.",
+                "interpretation": interpretation,
+            }
+        conversion = float(assessment["conversion_alimenticia"])
+        if conversion < 1.2:
+            label = "Excelente"
+        elif conversion < 1.5:
+            label = "Muy buena"
+        elif conversion < 1.8:
+            label = "Buena"
+        elif conversion <= 2.0:
+            label = "Regular"
+        else:
+            label = "Deficiente"
+        sampled_at = assessment["fecha_muestreo"]
+        return {
+            "available": True,
+            "sampled_at": sampled_at.isoformat() if hasattr(sampled_at, "isoformat") else str(sampled_at),
+            "conversion_alimenticia": conversion,
+            "conversion_label": label,
+            "total_alimento_consumido_kg": float(assessment["total_alimento_consumido_kg"]),
+            "biomasa_inicial_kg": float(assessment["bi_kg"]),
+            "biomasa_final_kg": float(assessment["bf_kg"]),
+            "peso_promedio_g": float(assessment["prom_peso_g"]),
+            "longitud_promedio_cm": float(assessment["prom_longitud_cm"]),
+            "tasa_crecimiento_g_dia": float(assessment["tasa_crecimiento_g_dia"]),
+            "interpretation": interpretation,
+            "formula": r"\mathrm{FCA}=\frac{\mathrm{TAC}}{B_f-B_i}",
+            "source_document": "Biometria1.docx, seccion 1.1",
+        }
+
+    def water_quality_index_for_pond(
+        self,
+        pond_id: str,
+        prepared: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
+        latest = self._latest_observed(prepared["aligned"], REQUIRED_VARIABLES)
+        values = latest["values"]
+        result = water_quality_index(
+            float(values["water_temperature_c"]),
+            float(values["ph"]),
+            float(values["dissolved_oxygen_mg_l"]),
+            float(values["nitrate_ion"]),
+        )
+        return {
+            **result,
+            "model_code": WATER_QUALITY_ICA_MODEL_CODE,
+            "pond_id": pond_id,
+            "timestamp": latest["timestamp"].isoformat(),
+            "traceability": {
+                "source_document": "Biometria1.docx, seccion 4.1",
+                "source_table": "sismapiscis.parametro_aguas",
+                "input_variables": REQUIRED_VARIABLES,
+                "generated_data_used": False,
+            },
+        }
+
+    def biofloc_water_quality(self) -> dict[str, object]:
+        return {
+            **biofloc_water_quality_readiness(),
+            "model_code": BIOFLOC_WATER_QUALITY_MODEL_CODE,
+            "traceability": {
+                "source_document": "Biometria1.docx, seccion 4.5",
+                "generated_data_used": False,
+            },
+        }
 
     def _require_persistent_store(self) -> None:
         required = (

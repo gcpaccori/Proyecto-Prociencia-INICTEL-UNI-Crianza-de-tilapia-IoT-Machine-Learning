@@ -322,6 +322,35 @@ class MySQLBackendStore:
                         "unit": unit,
                     },
                 )
+            connection.execute(
+                text(
+                    f"""
+                    INSERT INTO fish_biometric_samples (
+                        sample_id, pond_id, sampled_at, average_length_mm,
+                        average_weight_g, sample_size, source, created_at
+                    )
+                    SELECT
+                        CONCAT('LEGACY-BIOMETRIC-', b.id),
+                        CONCAT('LEGACY-POND-', ce.piscina_id),
+                        b.fecha_muestreo,
+                        b.prom_longitud_cm * 10.0,
+                        b.prom_peso_g,
+                        b.cantidad_muestreo,
+                        'legacy_biometrias',
+                        COALESCE(b.created_at, UTC_TIMESTAMP())
+                    FROM {legacy}.biometrias b
+                    JOIN {legacy}.campania_etapas ce ON ce.id = b.campania_etapa_id
+                    WHERE b.deleted_at IS NULL
+                      AND ce.deleted_at IS NULL
+                    ON DUPLICATE KEY UPDATE
+                        sampled_at = VALUES(sampled_at),
+                        average_length_mm = VALUES(average_length_mm),
+                        average_weight_g = VALUES(average_weight_g),
+                        sample_size = VALUES(sample_size),
+                        source = VALUES(source)
+                    """
+                )
+            )
         self._last_legacy_sync_at = now
 
     def create_farm(self, payload: FarmCreate) -> FarmRead:
@@ -1390,6 +1419,38 @@ class MySQLBackendStore:
             SELECT * FROM fish_biometric_samples
             WHERE pond_id = :pond_id
             ORDER BY sampled_at DESC
+            LIMIT 1
+            """,
+            {"pond_id": pond_id},
+        )
+
+    def latest_biometric_assessment(self, pond_id: str) -> dict[str, Any] | None:
+        if not self.legacy_database_name:
+            return None
+        legacy = self._quoted_legacy_database()
+        return self._fetch_one(
+            f"""
+            SELECT
+                b.id AS biometria_id,
+                b.fecha_inicial,
+                b.fecha_muestreo,
+                b.tiempo_dias,
+                b.cantidad_muestreo,
+                b.bi_kg,
+                b.bf_kg,
+                b.prom_longitud_cm,
+                b.prom_peso_g,
+                b.tasa_crecimiento_g_dia,
+                b.total_alimento_consumido_kg,
+                b.conversion_alimenticia,
+                b.tasa_supervivencia_porcentaje,
+                CONCAT('LEGACY-POND-', ce.piscina_id) AS pond_id
+            FROM {legacy}.biometrias b
+            JOIN {legacy}.campania_etapas ce ON ce.id = b.campania_etapa_id
+            WHERE b.deleted_at IS NULL
+              AND ce.deleted_at IS NULL
+              AND CONCAT('LEGACY-POND-', ce.piscina_id) = :pond_id
+            ORDER BY b.fecha_muestreo DESC, b.id DESC
             LIMIT 1
             """,
             {"pond_id": pond_id},
