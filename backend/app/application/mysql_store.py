@@ -1424,6 +1424,29 @@ class MySQLBackendStore:
             {"pond_id": pond_id},
         )
 
+    def list_biometric_detail_samples(self, pond_id: str) -> list[dict[str, Any]]:
+        if not self.legacy_database_name:
+            return []
+        legacy = self._quoted_legacy_database()
+        return self._fetch_all(
+            f"""
+            SELECT
+                b.fecha_muestreo AS sampled_at,
+                bd.longitud_cm * 10.0 AS length_mm,
+                bd.peso_g AS weight_g
+            FROM {legacy}.biometria_detalles bd
+            JOIN {legacy}.biometrias b ON b.id = bd.biometria_id
+            JOIN {legacy}.campania_etapas ce ON ce.id = b.campania_etapa_id
+            WHERE b.deleted_at IS NULL
+              AND ce.deleted_at IS NULL
+              AND CONCAT('LEGACY-POND-', ce.piscina_id) = :pond_id
+              AND bd.longitud_cm IS NOT NULL
+              AND bd.peso_g IS NOT NULL
+            ORDER BY b.fecha_muestreo ASC, bd.id ASC
+            """,
+            {"pond_id": pond_id},
+        )
+
     def latest_biometric_assessment(self, pond_id: str) -> dict[str, Any] | None:
         if not self.legacy_database_name:
             return None

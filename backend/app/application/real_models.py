@@ -22,7 +22,10 @@ from backend.app.models_engine.deterministic.dissolved_oxygen import (
     oxygen_status,
     update_do_0d,
 )
-from backend.app.models_engine.deterministic.growth import tilapia_growth_temperature
+from backend.app.models_engine.deterministic.growth import (
+    fit_local_weight_length,
+    tilapia_growth_temperature,
+)
 from backend.app.models_engine.deterministic.water_quality import (
     biofloc_water_quality_readiness,
     water_quality_index,
@@ -618,12 +621,15 @@ class RealModelsService:
         prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
         latest = self._latest_observed(prepared["aligned"], ["water_temperature_c"])
         sample = self.store.latest_biometric_sample(pond_id)
+        detail_samples = self.store.list_biometric_detail_samples(pond_id)
+        weight_length_model = fit_local_weight_length(detail_samples)
         result = tilapia_growth_temperature(
             float(latest["values"]["water_temperature_c"]),
             float(sample["average_length_mm"])
             if sample and sample.get("average_length_mm") is not None
             else None,
             projection_days,
+            weight_length_model,
         )
         return {
             "model_code": GROWTH_MODEL_CODE,
@@ -634,6 +640,8 @@ class RealModelsService:
                 "formula": "delta_L=-1.6707+0.09682T",
                 "temperature_source": "parametro_aguas.temperatura",
                 "biometric_source": sample.get("source") if sample else None,
+                "weight_length_source": "sismapiscis.biometria_detalles",
+                "weight_length_sample_count": len(detail_samples),
             },
         }
 
@@ -660,6 +668,7 @@ class RealModelsService:
         ica_svm = self.ica_svm_classification(pond_id, prepared)
         biometric_assessment = self.store.latest_biometric_assessment(pond_id)
         biometric_context = self._biometric_context(biometric_assessment)
+        biometric_context["weight_length_model"] = growth.get("weight_length_model")
         growth["requested_projection_days"] = growth_projection_days
         latest_od = self._latest_observed(
             prepared["aligned"],
@@ -934,12 +943,12 @@ class RealModelsService:
                     "chart": self._growth_temperature_chart(latest_od),
                 },
                 "formula": {
-                    "expression": "Delta L = -1.6707 + 0.09682T (mm/dia)",
-                    "latex": r"\Delta L=-1.6707+0.09682T",
-                    "detail": "Si existe una biometria real: L(t+d) = L(t) + d x Delta L.",
+                    "expression": self._growth_formula_expression(growth),
+                    "latex": self._growth_formula_latex(growth),
+                    "detail": self._growth_formula_detail(growth),
                     "conditions": [
                         "Dominio validado para tilapia: 21 a 30 C.",
-                        "La longitud y peso futuros solo se calculan con una longitud inicial biometrica real.",
+                        self._growth_formula_condition(growth),
                     ],
                 },
                 "origin": {
@@ -1418,19 +1427,24 @@ class RealModelsService:
             )
         if not isinstance(projection, dict):
             return rows
-        return [
-            *rows,
+        rows.extend(
+            [
             {
                 "label": f"Longitud en {projection['projection_days']} dias",
                 "value": projection["projected_length_mm"],
                 "unit": "mm",
-            },
-            {
-                "label": f"Peso estimado en {projection['projection_days']} dias",
-                "value": projection["projected_weight_g"],
-                "unit": "g",
-            },
-        ]
+            }
+            ]
+        )
+        if projection.get("projected_weight_g") is not None:
+            rows.append(
+                {
+                    "label": f"Peso estimado en {projection['projection_days']} dias",
+                    "value": projection["projected_weight_g"],
+                    "unit": "g",
+                }
+            )
+        return rows
 
     @staticmethod
     def _growth_usage(growth: dict[str, object]) -> dict[str, str]:
@@ -1449,8 +1463,57 @@ class RealModelsService:
         return {
             "status": "en_uso",
             "label": "Proyeccion calculada desde biometria real",
-            "detail": "La longitud y el peso se proyectan para el horizonte seleccionado.",
+            "detail": (
+                "La longitud y el peso se proyectan para el horizonte seleccionado con la curva local ajustada."
+                if growth.get("weight_length_model")
+                else "La longitud se proyecta; el peso permanece bloqueado hasta contar con biometria detallada suficiente."
+            ),
         }
+
+    @staticmethod
+    def _growth_weight_model(growth: dict[str, object]) -> dict[str, object] | None:
+        model = growth.get("weight_length_model")
+        return model if isinstance(model, dict) else None
+
+    @classmethod
+    def _growth_formula_expression(cls, growth: dict[str, object]) -> str:
+        model = cls._growth_weight_model(growth)
+        if model is None:
+            return "Delta L = -1.6707 + 0.09682T (mm/dia)"
+        return (
+            "Delta L = -1.6707 + 0.09682T (mm/dia); "
+            f"W = {float(model['coefficient']):.6g} L^{float(model['exponent']):.4f}"
+        )
+
+    @classmethod
+    def _growth_formula_latex(cls, growth: dict[str, object]) -> str:
+        model = cls._growth_weight_model(growth)
+        if model is None:
+            return r"\Delta L=-1.6707+0.09682T"
+        return (
+            r"\Delta L=-1.6707+0.09682T"
+            + rf"\qquad W={float(model['coefficient']):.4e}L^{{{float(model['exponent']):.4f}}}"
+        )
+
+    @classmethod
+    def _growth_formula_detail(cls, growth: dict[str, object]) -> str:
+        model = cls._growth_weight_model(growth)
+        if model is None:
+            return "Si existe una biometria real: L(t+d) = L(t) + d x Delta L. El peso queda sin calcular hasta tener detalle biometrico suficiente."
+        return (
+            "La longitud usa la ecuacion termica publicada. El peso usa W=aL^b, "
+            f"ajustada con {int(model['sample_count'])} mediciones reales de longitud (mm) y peso (g); R2={float(model['r2']):.3f}."
+        )
+
+    @classmethod
+    def _growth_formula_condition(cls, growth: dict[str, object]) -> str:
+        model = cls._growth_weight_model(growth)
+        if model is None:
+            return "La longitud futura requiere una biometria inicial; el peso requiere al menos ocho mediciones detalladas reales."
+        return (
+            f"Curva longitud-peso local: {int(model['sample_count'])} mediciones reales; "
+            f"R2 de ajuste = {float(model['r2']):.3f}."
+        )
 
     @staticmethod
     def _oxygen_projection_value(
@@ -1839,6 +1902,7 @@ class RealModelsService:
             "get_variable_metadata",
             "save_model_forecast",
             "latest_biometric_sample",
+            "list_biometric_detail_samples",
         )
         if any(not hasattr(self.store, name) for name in required):
             raise ValueError("real models require the MySQL backend store")

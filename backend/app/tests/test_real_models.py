@@ -2,7 +2,10 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from backend.app.models_engine.deterministic.dissolved_oxygen import oxygen_status
-from backend.app.models_engine.deterministic.growth import tilapia_growth_temperature
+from backend.app.models_engine.deterministic.growth import (
+    fit_local_weight_length,
+    tilapia_growth_temperature,
+)
 from backend.app.models_engine.deterministic.water_quality import water_quality_index
 from backend.app.application.real_models import RealModelsService
 from backend.app.models_engine.ml.preprocessing import (
@@ -71,6 +74,28 @@ def test_deterministic_models_use_only_supplied_real_measurements() -> None:
     outside_domain = tilapia_growth_temperature(20.0)
     assert outside_domain["status"] == "out_of_validated_domain"
     assert outside_domain["daily_length_gain_mm_day"] is None
+
+
+def test_local_weight_length_model_uses_biometric_measurements() -> None:
+    samples = [
+        {"length_mm": float(length), "weight_g": 0.00002 * float(length) ** 2.8}
+        for length in range(50, 131, 10)
+    ]
+    model = fit_local_weight_length(samples)
+
+    assert model is not None
+    assert model["sample_count"] == len(samples)
+    assert math.isclose(float(model["exponent"]), 2.8, rel_tol=1e-6)
+    assert float(model["r2"]) > 0.999
+
+    projection = tilapia_growth_temperature(
+        27.0,
+        initial_length_mm=100.0,
+        projection_days=7,
+        weight_length_model=model,
+    )["length_projection"]
+    assert projection is not None
+    assert projection["projected_weight_g"] is not None
 
 
 def test_formula_relationship_chart_marks_the_current_measurement() -> None:

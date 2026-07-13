@@ -184,10 +184,67 @@ def nile_tilapia_weight_from_length(length_mm: float) -> float:
     return 1.861e-8 * length**3
 
 
+def fit_local_weight_length(
+    samples: list[dict[str, object]],
+) -> dict[str, float | int] | None:
+    """Fit W = aL^b with real biometric detail rows in millimetres and grams."""
+    points: list[tuple[float, float]] = []
+    for sample in samples:
+        length = sample.get("length_mm")
+        weight = sample.get("weight_g")
+        if length is None or weight is None:
+            continue
+        numeric_length = float(length)
+        numeric_weight = float(weight)
+        if numeric_length > 0 and numeric_weight > 0:
+            points.append((numeric_length, numeric_weight))
+
+    if len(points) < 8 or len({length for length, _ in points}) < 2:
+        return None
+
+    log_lengths = [math.log(length) for length, _ in points]
+    log_weights = [math.log(weight) for _, weight in points]
+    mean_length = sum(log_lengths) / len(log_lengths)
+    mean_weight = sum(log_weights) / len(log_weights)
+    denominator = sum((value - mean_length) ** 2 for value in log_lengths)
+    if denominator == 0:
+        return None
+    exponent = sum(
+        (log_length - mean_length) * (log_weight - mean_weight)
+        for log_length, log_weight in zip(log_lengths, log_weights, strict=True)
+    ) / denominator
+    coefficient = math.exp(mean_weight - exponent * mean_length)
+    predictions = [coefficient * length**exponent for length, _ in points]
+    observed_mean = sum(weight for _, weight in points) / len(points)
+    residual_sum = sum(
+        (weight - predicted) ** 2
+        for (_, weight), predicted in zip(points, predictions, strict=True)
+    )
+    total_sum = sum((weight - observed_mean) ** 2 for _, weight in points)
+    r2 = 1.0 if total_sum == 0 else 1.0 - residual_sum / total_sum
+    return {
+        "coefficient": coefficient,
+        "exponent": exponent,
+        "r2": r2,
+        "sample_count": len(points),
+    }
+
+
+def local_weight_from_length(
+    length_mm: float,
+    weight_length_model: dict[str, float | int],
+) -> float:
+    length = _positive("length_mm", length_mm)
+    return float(weight_length_model["coefficient"]) * length ** float(
+        weight_length_model["exponent"]
+    )
+
+
 def tilapia_growth_temperature(
     temperature_c: float,
     initial_length_mm: float | None = None,
     projection_days: int | None = None,
+    weight_length_model: dict[str, float | int] | None = None,
 ) -> dict[str, object]:
     temperature = float(temperature_c)
     validated_range = [21.0, 30.0]
@@ -215,9 +272,17 @@ def tilapia_growth_temperature(
             "initial_length_mm": length,
             "projection_days": days,
             "projected_length_mm": projected_length,
-            "projected_weight_g": nile_tilapia_weight_from_length(projected_length),
+            "projected_weight_g": (
+                local_weight_from_length(projected_length, weight_length_model)
+                if weight_length_model is not None
+                else None
+            ),
         }
-        note = "Longitud y peso proyectados desde una muestra biometrica real."
+        note = (
+            "Longitud y peso proyectados desde biometria real y una curva local longitud-peso."
+            if weight_length_model is not None
+            else "Longitud proyectada desde biometria real; el peso requiere al menos ocho mediciones biometrica detalladas."
+        )
     return {
         "status": "calculated",
         "temperature_c": temperature,
@@ -225,6 +290,7 @@ def tilapia_growth_temperature(
         "validated_temperature_range_c": validated_range,
         "source_r2": 0.95,
         "length_projection": projection,
+        "weight_length_model": weight_length_model,
         "note": note,
     }
 
