@@ -3,14 +3,14 @@ from __future__ import annotations
 from time import monotonic
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.app.api.v1.dependencies import get_store
 from backend.app.application.real_models import RealModelsService
 
 
 router = APIRouter()
-_DASHBOARD_CACHE_SECONDS = 45.0
+_DASHBOARD_CACHE_SECONDS = 120.0
 _dashboard_cache: dict[tuple[str, int, int], tuple[float, dict[str, object]]] = {}
 
 
@@ -23,6 +23,15 @@ class DynamicOxygenRequest(BaseModel):
     fish_respiration_rate_mg_h_kg: float | None = None
     reaeration_rate_h_1: float | None = None
     dt_h: float | None = None
+
+
+class DigitalTwinSimulationRequest(BaseModel):
+    temperature_c: float | None = Field(default=None, ge=0, le=45)
+    ph: float | None = Field(default=None, ge=0, le=14)
+    dissolved_oxygen_mg_l: float | None = Field(default=None, ge=0, le=30)
+    nitrate_ion: float | None = Field(default=None, ge=0, le=500)
+    projection_days: int = Field(default=7, ge=1, le=365)
+    active_models: list[str] = Field(default_factory=list)
 
 
 def _service(store: object) -> RealModelsService:
@@ -108,6 +117,20 @@ def get_tilapia_growth(
         lambda: _service(store).tilapia_growth(
             _legacy_pond_id(pond_id),
             projection_days=projection_days,
+        )
+    )
+
+
+@router.post("/ponds/{pond_id}/digital-twin/simulate")
+def simulate_digital_twin(
+    pond_id: str,
+    request: DigitalTwinSimulationRequest,
+    store: object = Depends(get_store),
+) -> dict[str, object]:
+    return _run(
+        lambda: _service(store).simulate_digital_twin(
+            _legacy_pond_id(pond_id),
+            request.model_dump(),
         )
     )
 

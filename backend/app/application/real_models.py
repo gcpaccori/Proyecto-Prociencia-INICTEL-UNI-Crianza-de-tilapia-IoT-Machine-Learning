@@ -645,13 +645,177 @@ class RealModelsService:
             },
         }
 
+    def simulate_digital_twin(
+        self,
+        pond_id: str,
+        inputs: dict[str, object],
+    ) -> dict[str, object]:
+        """Evaluate only documented models that accept a single manual scenario."""
+        prepared = self._prepare_dataset(pond_id, persist_cleaning=False, limit=2400)
+        latest = self._latest_observed(prepared["aligned"], REQUIRED_VARIABLES)
+        observed = latest["values"]
+        scenario = {
+            code: float(inputs[code])
+            if inputs.get(code) is not None
+            else float(observed[code])
+            for code in REQUIRED_VARIABLES
+        }
+        manual_variables = [
+            code for code in REQUIRED_VARIABLES if inputs.get(code) is not None
+        ]
+        active_models = set(inputs.get("active_models") or [])
+        if not active_models:
+            active_models = {
+                WATER_QUALITY_ICA_MODEL_CODE,
+                OXYGEN_MODEL_CODE,
+                GROWTH_MODEL_CODE,
+            }
+        projection_days = int(inputs.get("projection_days") or 7)
+        water_quality = water_quality_index(
+            scenario["water_temperature_c"],
+            scenario["ph"],
+            scenario["dissolved_oxygen_mg_l"],
+            scenario["nitrate_ion"],
+        )
+        oxygen = oxygen_status(
+            scenario["water_temperature_c"],
+            scenario["dissolved_oxygen_mg_l"],
+            scenario["dissolved_oxygen_mg_l"],
+        )
+        measured_growth = self.tilapia_growth(
+            pond_id,
+            prepared=prepared,
+            projection_days=projection_days,
+        )
+        existing_projection = measured_growth.get("length_projection")
+        growth = {
+            **measured_growth,
+            **tilapia_growth_temperature(
+                scenario["water_temperature_c"],
+                float(existing_projection["initial_length_mm"])
+                if isinstance(existing_projection, dict)
+                and existing_projection.get("initial_length_mm") is not None
+                else None,
+                projection_days,
+                measured_growth.get("weight_length_model")
+                if isinstance(measured_growth.get("weight_length_model"), dict)
+                else None,
+            ),
+        }
+
+        model_outputs: list[dict[str, object]] = []
+        if WATER_QUALITY_ICA_MODEL_CODE in active_models:
+            model_outputs.append(
+                {
+                    "code": WATER_QUALITY_ICA_MODEL_CODE,
+                    "name": "Indice de calidad de agua",
+                    "value": water_quality["ica"],
+                    "unit": "/100",
+                    "detail": f"Clasificacion del escenario: {water_quality['classification']}.",
+                    "status": "calculado",
+                }
+            )
+        if OXYGEN_MODEL_CODE in active_models:
+            model_outputs.append(
+                {
+                    "code": OXYGEN_MODEL_CODE,
+                    "name": "Saturacion de oxigeno",
+                    "value": oxygen["saturation_percent"],
+                    "unit": "%",
+                    "detail": "Relacion entre el OD ingresado y su saturacion a la temperatura del escenario.",
+                    "status": "calculado",
+                }
+            )
+        if GROWTH_MODEL_CODE in active_models:
+            model_outputs.append(
+                {
+                    "code": GROWTH_MODEL_CODE,
+                    "name": "Crecimiento de tilapia",
+                    "value": growth["daily_length_gain_mm_day"],
+                    "unit": "mm/dia",
+                    "detail": growth["note"],
+                    "status": growth["status"],
+                    "projection": growth.get("length_projection"),
+                }
+            )
+
+        normalized_levels: list[tuple[str, float]] = []
+        if WATER_QUALITY_ICA_MODEL_CODE in active_models:
+            normalized_levels.append(("ICA", float(water_quality["ica"])))
+        if OXYGEN_MODEL_CODE in active_models:
+            normalized_levels.append(
+                ("Saturacion OD", min(100.0, max(0.0, float(oxygen["saturation_percent"]))))
+            )
+        if GROWTH_MODEL_CODE in active_models and growth["daily_length_gain_mm_day"] is not None:
+            optimal_growth = -1.6707 + 0.09682 * 30.0
+            normalized_levels.append(
+                (
+                    "Crecimiento",
+                    min(
+                        100.0,
+                        max(
+                            0.0,
+                            float(growth["daily_length_gain_mm_day"])
+                            / optimal_growth
+                            * 100.0,
+                        ),
+                    ),
+                )
+            )
+        return {
+            "status": "calculated",
+            "pond_id": pond_id,
+            "scenario_inputs": scenario,
+            "manual_variables": manual_variables,
+            "reference_timestamp": latest["timestamp"].isoformat(),
+            "projection_days": projection_days,
+            "models": model_outputs,
+            "chart": {
+                "title": {"text": "Respuesta relativa del escenario", "left": "center"},
+                "tooltip": {"trigger": "axis"},
+                "grid": {"top": 62, "left": 54, "right": 30, "bottom": 48},
+                "xAxis": {
+                    "type": "category",
+                    "data": [name for name, _ in normalized_levels],
+                },
+                "yAxis": {
+                    "type": "value",
+                    "name": "Nivel relativo (%)",
+                    "min": 0,
+                    "max": 100,
+                },
+                "series": [
+                    {
+                        "name": "Nivel relativo",
+                        "type": "bar",
+                        "barMaxWidth": 52,
+                        "data": [round(value, 2) for _, value in normalized_levels],
+                        "itemStyle": {"color": "#0d6efd"},
+                    }
+                ],
+            },
+            "notice": (
+                "La SVM de OD no se recalcula con una sola lectura manual: requiere su historial temporal de temperatura, pH, OD y nitrato. "
+                "El simulador manual aplica solo los modelos cuyas ecuaciones admiten estas entradas."
+            ),
+            "traceability": {
+                "source": "FastAPI local -> MySQL local",
+                "generated_data_used": False,
+                "manual_variables": manual_variables,
+            },
+        }
+
     def dashboard(
         self,
         pond_id: str,
         window_hours: int = 168,
         growth_projection_days: int = 7,
     ) -> dict[str, object]:
-        prepared = self._prepare_dataset(pond_id, persist_cleaning=False, limit=100000)
+        prepared = self._prepare_dataset(
+            pond_id,
+            persist_cleaning=False,
+            limit=self._dashboard_raw_limit(window_hours),
+        )
         productive_forecast = self.forecast_svm_od(pond_id, prepared)
         display_forecast = (
             productive_forecast
@@ -1049,7 +1213,9 @@ class RealModelsService:
                 "source_table": "sismapiscis.parametro_aguas",
                 "timestamp_field": "created_at",
                 "projection_method": "SVM 1h + formulas publicadas",
-                "uses_all_points": True,
+                "uses_all_points": False,
+                "dashboard_scope": "La vista usa la ventana solicitada y contexto reciente para las demoras SVM; el entrenamiento conserva todos los puntos reales disponibles.",
+                "dashboard_raw_limit": self._dashboard_raw_limit(window_hours),
                 "generated_data_used": False,
                 "chart_window_hours": window_hours,
                 "cleaning_run_id": prepared["cleaning_run"].run_id if prepared.get("cleaning_run") else None,
@@ -1410,6 +1576,12 @@ class RealModelsService:
             2160: "Ultimos 90 dias",
         }
         return labels.get(window_hours, f"Ultimas {window_hours} horas")
+
+    @staticmethod
+    def _dashboard_raw_limit(window_hours: int) -> int:
+        """Keep the selected chart window and enough recent context for SVM lags."""
+        rows_per_hour = 4 * 6
+        return min(60000, max(2400, int((window_hours + 6) * rows_per_hour * 1.15)))
 
     @staticmethod
     def _growth_forecast_rows(growth: dict[str, object]) -> list[dict[str, object]]:
