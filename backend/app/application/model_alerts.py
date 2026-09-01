@@ -15,6 +15,8 @@ No threshold is fabricated here.
 
 from __future__ import annotations
 
+import time
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -31,6 +33,7 @@ SVM_MODEL_CODE = "SVM_OD_FORECAST_1H"
 GROWTH_MODEL_CODE = "TILAPIA_GROWTH_TEMPERATURE"
 ICA_MODEL_CODE = "WATER_QUALITY_INDEX_ICA"
 LIGHT_MODEL_CODE = "LIGHT_FEED_RESPONSE_CLASSIFIER_V1"
+PHOTOPERIOD_MODEL_CODE = "PHOTOPERIOD_GREENHOUSE_V1"
 
 _CACHE_SECONDS = 120.0
 _STALE_SECONDS = 1800.0
@@ -120,12 +123,14 @@ class ModelAlertDashboardService:
         growth = raw_models.get(GROWTH_MODEL_CODE, {})
         ica = raw_models.get(ICA_MODEL_CODE, {})
         light = self._light_context(pond_id, window_hours)
+        photoperiod = self._photoperiod_context(pond_id, window_hours)
 
         cards = [
             self._ica_card(ica, policies.get(ICA_MODEL_CODE)),
             self._growth_card(growth, policies.get(GROWTH_MODEL_CODE)),
             self._svm_card(svm, dashboard, policies.get(SVM_MODEL_CODE)),
             self._light_card(light, policies.get(LIGHT_MODEL_CODE)),
+            self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
         ]
         events = self._eligible_events(cards, pond_id)
         observations = self._technical_observations(dashboard)
@@ -149,6 +154,7 @@ class ModelAlertDashboardService:
             "events": events,
             "technical_observations": observations,
             "light": light,
+            "photoperiod": photoperiod,
             "meta": {
                 "source": "fastapi_model_alert_contract",
                 "computed_at": self._iso_now(),
@@ -270,6 +276,241 @@ class ModelAlertDashboardService:
         )
         card["maturity"] = "collecting_data" if sensor_registered else "blocked_inputs"
         card["can_emit"] = False
+        return card
+
+
+    # ------------------------------------------------------------------
+    # Fotoperiodo de vivero: sensor interior contra luz natural de Open-Meteo
+    # ------------------------------------------------------------------
+    _photoperiod_outdoor_cache: dict[tuple[float, float], tuple[float, Any]] = {}
+
+    def _photoperiod_context(self, pond_id: str, window_hours: int) -> dict[str, Any]:
+        from backend.app.models_engine.deterministic import photoperiod as pp
+
+        empty = {
+            "available": False,
+            "reason": "No hay lecturas de iluminancia para esta piscina.",
+        }
+        engine = getattr(self.store, "engine", None)
+        legacy_database = getattr(self.store, "legacy_database_name", None)
+        pond_number = self._pond_number(pond_id)
+        if engine is None or not legacy_database or pond_number is None:
+            return empty
+        safe = str(legacy_database).replace("`", "``")
+
+        try:
+            with engine.connect() as connection:
+                exists = connection.execute(
+                    text(
+                        """
+                        SELECT 1 FROM information_schema.TABLES
+                        WHERE TABLE_SCHEMA = :db AND TABLE_NAME = 'parametro_ambientes' LIMIT 1
+                        """
+                    ),
+                    {"db": legacy_database},
+                ).scalar()
+                if not exists:
+                    return empty
+                rows = connection.execute(
+                    text(
+                        f"""
+                        SELECT fecha_medicion, iluminancia
+                        FROM `{safe}`.`parametro_ambientes`
+                        WHERE piscina_id = :piscina_id AND iluminancia IS NOT NULL
+                        ORDER BY fecha_medicion DESC
+                        LIMIT 2000
+                        """
+                    ),
+                    {"piscina_id": pond_number},
+                ).mappings().all()
+                coords = connection.execute(
+                    text(
+                        f"""
+                        SELECT g.latitud, g.longitud, g.nombre
+                        FROM `{safe}`.`piscinas` p
+                        JOIN `{safe}`.`piscigranjas` g ON g.id = p.piscigranja_id
+                        WHERE p.id = :piscina_id LIMIT 1
+                        """
+                    ),
+                    {"piscina_id": pond_number},
+                ).mappings().first()
+        except Exception:
+            return empty
+
+        observations = []
+        for row in rows:
+            moment = row.get("fecha_medicion")
+            value = row.get("iluminancia")
+            if moment is None or value is None:
+                continue
+            try:
+                observations.append((moment, float(value)))
+            except (TypeError, ValueError):
+                continue
+        if not observations:
+            return empty
+
+        try:
+            indoor = pp.build_indoor_profile(observations, window_hours=max(24, window_hours))
+        except pp.PhotoperiodDataUnavailable as error:
+            return {"available": False, "reason": str(error)}
+
+        outdoor = None
+        outdoor_error = None
+        try:
+            latitude = float(coords["latitud"]) if coords and coords.get("latitud") else None
+            longitude = float(coords["longitud"]) if coords and coords.get("longitud") else None
+        except (TypeError, ValueError):
+            latitude = longitude = None
+        if latitude is not None and longitude is not None:
+            key = (round(latitude, 4), round(longitude, 4))
+            cached = self._photoperiod_outdoor_cache.get(key)
+            now = time.time()
+            if cached and now - cached[0] < 3600.0:
+                outdoor = cached[1]
+            else:
+                try:
+                    outdoor = pp.fetch_outdoor_reference(latitude, longitude)
+                    self._photoperiod_outdoor_cache[key] = (now, outdoor)
+                except Exception as error:  # la API externa nunca debe tumbar el panel
+                    outdoor_error = f"{type(error).__name__}: {error}"
+                    if cached:
+                        outdoor = cached[1]
+
+        assessment = pp.assess(indoor, outdoor)
+        return {
+            "available": True,
+            "farm": (coords or {}).get("nombre"),
+            "latitude": latitude,
+            "longitude": longitude,
+            "indoor": {
+                "readings": indoor.readings,
+                "measured_hours": indoor.measured_hours,
+                "peak_lux": indoor.peak_lux,
+                "mean_daytime_lux": indoor.mean_daytime_lux,
+                "night_floor_lux": indoor.night_floor_lux,
+                "effective_hours": indoor.effective_hours,
+                "poor_hours": indoor.poor_hours,
+                "comfort_hours": indoor.comfort_hours,
+                "first_light_hour": indoor.first_light_hour,
+                "last_light_hour": indoor.last_light_hour,
+                "hourly_mean_lux": indoor.hourly_mean_lux,
+            },
+            "outdoor": None if outdoor is None else {
+                "date": outdoor.date,
+                "daylight_hours": outdoor.daylight_hours,
+                "sunshine_hours": outdoor.sunshine_hours,
+                "radiation_sum_mj_m2": outdoor.radiation_sum_mj_m2,
+                "peak_irradiance_w_m2": outdoor.peak_irradiance_w_m2,
+                "peak_lux_estimate": outdoor.peak_lux_estimate,
+                "source": outdoor.source,
+            },
+            "outdoor_error": outdoor_error,
+            "transmittance_pct": assessment.transmittance_pct,
+            "deficit_hours": assessment.deficit_hours,
+            "level": assessment.level,
+            "headline": assessment.headline,
+            "detail": assessment.detail,
+            "effects": assessment.effects,
+            "recommendations": assessment.recommendations,
+            "alarm_value": assessment.alarm_value,
+            "chart": pp.build_chart(assessment),
+        }
+
+    def _photoperiod_card(
+        self, context: dict[str, Any], policy: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        from backend.app.models_engine.deterministic import photoperiod as pp
+
+        available = bool(context.get("available"))
+        indoor = context.get("indoor") or {}
+        outdoor = context.get("outdoor") or {}
+        transmittance = context.get("transmittance_pct")
+
+        detail_parts = [context.get("detail") or ""]
+        if transmittance is not None:
+            detail_parts.append(
+                f"La cubierta del vivero transmite {transmittance:.2f}% de la luz natural."
+            )
+        if context.get("outdoor_error"):
+            detail_parts.append("No se pudo consultar la luz natural externa en este ciclo.")
+
+        card = self._card(
+            code=PHOTOPERIOD_MODEL_CODE,
+            alarm_code="MODEL_PHOTOPERIOD_DEFICIT",
+            name="Fotoperiodo del vivero",
+            purpose=(
+                "Compara la luz medida dentro del vivero con la luz natural que deberia "
+                "haber afuera y estima si alcanza para que la tilapia coma bien."
+            ),
+            horizon="Ultimas 24 horas",
+            inputs=["Iluminancia interior", "Ubicacion de la piscigranja", "Luz natural (Open-Meteo)"],
+            model={
+                "status": "calculado" if available else "sin_datos",
+                "current_value": context.get("alarm_value"),
+                "unit": "h de luz util",
+                "chart": context.get("chart"),
+                "relationship": None if not available else {
+                    "description": (
+                        "Cada barra es el promedio de luz por hora dentro del vivero. "
+                        "Debajo de 10 lux la tilapia deja de detectar el alimento; "
+                        "por encima de 100 lux come con normalidad."
+                    ),
+                    "chart": context.get("chart"),
+                },
+                "formula": {
+                    "expression": "horas_utiles = suma(horas con lux >= 10)",
+                    "detail": (
+                        "Se promedia la iluminancia por hora y se cuentan las horas que superan "
+                        "el umbral de deteccion visual de la tilapia. La transmitancia se calcula "
+                        "dividiendo el pico interior entre la irradiancia externa convertida a lux "
+                        "(1 W/m2 = 116 lux)."
+                    ),
+                    "conditions": [
+                        "Umbral de deteccion: 10 lux; alimentacion pobre entre 10 y 30 lux.",
+                        "Referencia de confort: 100 lux durante la ventana de alimentacion.",
+                        "Fotoperiodo recomendado entre 12L:12D y 18L:6D.",
+                        "Calculo determinista: no usa artefacto entrenado.",
+                    ],
+                },
+                "usage": {
+                    "status": "en_uso" if available else "sin_datos",
+                    "label": context.get("headline") or "Sin lecturas de luz",
+                    "detail": " ".join(part for part in detail_parts if part).strip(),
+                },
+                "traceability": {
+                    "indoor_source": "sismapiscis.parametro_ambientes.iluminancia",
+                    "outdoor_source": "Open-Meteo forecast API (servicio abierto, sin llave)",
+                    "farm": context.get("farm"),
+                    "latitude": context.get("latitude"),
+                    "longitude": context.get("longitude"),
+                    "outdoor_date": outdoor.get("date"),
+                    "readings_used": indoor.get("readings"),
+                    "effects_on_fish": context.get("effects") or [],
+                    "recommendations": context.get("recommendations") or [],
+                },
+                "metrics": {} if not available else {
+                    "horas_luz_util": indoor.get("effective_hours"),
+                    "horas_sobre_100_lux": indoor.get("comfort_hours"),
+                    "pico_interior_lux": indoor.get("peak_lux"),
+                    "piso_nocturno_lux": indoor.get("night_floor_lux"),
+                    "luz_natural_horas": outdoor.get("daylight_hours"),
+                    "pico_exterior_lux": outdoor.get("peak_lux_estimate"),
+                    "transmitancia_pct": transmittance,
+                },
+            },
+            policy=policy,
+            eligible=available,
+            unavailable_detail=str(
+                context.get("reason") or "No hay lecturas de iluminancia para esta piscina."
+            ),
+            eligible_detail=(
+                "El fotoperiodo se calcula con el sensor del vivero y la luz natural del dia; "
+                "una politica aprobada decide cuando avisar."
+            ),
+            prediction_value=context.get("alarm_value"),
+            prediction_for=None,
+        )
         return card
 
     def _card(
