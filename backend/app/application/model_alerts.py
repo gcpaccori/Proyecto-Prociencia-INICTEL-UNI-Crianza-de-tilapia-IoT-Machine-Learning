@@ -135,6 +135,20 @@ class ModelAlertDashboardService:
         ]
         events = self._eligible_events(cards, pond_id)
         observations = self._technical_observations(dashboard)
+        for card in cards:
+            drift = (card.get("data_freshness") or {}).get("clock_drift_days")
+            tabla = (card.get("data_freshness") or {}).get("source_table")
+            if drift and abs(drift) >= 1:
+                aviso = (
+                    f"El reloj del sensor de {tabla} va {abs(drift):.0f} dias por detras de la "
+                    "hora real: los datos llegan al dia pero con la marca de tiempo equivocada."
+                )
+                if aviso not in [o.get("message") for o in observations if isinstance(o, dict)]:
+                    observations.append({
+                        "kind": "sensor_clock_drift",
+                        "message": aviso,
+                        "productive": False,
+                    })
 
         return {
             "schema_version": "1.0",
@@ -532,12 +546,20 @@ class ModelAlertDashboardService:
             return {}
         safe = str(legacy).replace("`", "``")
         pond = self._pond_number(pond_id)
+        filtro = " WHERE piscina_id = :pond" if pond is not None else ""
         consultas = {
-            "parametro_aguas": f"SELECT MAX(fecha_medicion) FROM `{safe}`.`parametro_aguas`"
-                               + (" WHERE piscina_id = :pond" if pond is not None else ""),
-            "parametro_ambientes": f"SELECT MAX(fecha_medicion) FROM `{safe}`.`parametro_ambientes`"
-                                   + (" WHERE piscina_id = :pond" if pond is not None else ""),
-            "biometrias": f"SELECT MAX(fecha_muestreo) FROM `{safe}`.`biometrias`",
+            "parametro_aguas": (
+                f"SELECT MAX(created_at) AS llegada, MAX(fecha_medicion) AS sensor "
+                f"FROM `{safe}`.`parametro_aguas`{filtro}"
+            ),
+            "parametro_ambientes": (
+                f"SELECT MAX(created_at) AS llegada, MAX(fecha_medicion) AS sensor "
+                f"FROM `{safe}`.`parametro_ambientes`{filtro}"
+            ),
+            "biometrias": (
+                f"SELECT MAX(fecha_muestreo) AS llegada, MAX(fecha_muestreo) AS sensor "
+                f"FROM `{safe}`.`biometrias`"
+            ),
         }
         salida: dict[str, Any] = {}
         try:
@@ -545,12 +567,39 @@ class ModelAlertDashboardService:
                 for tabla, sql in consultas.items():
                     try:
                         params = {"pond": pond} if ":pond" in sql else {}
-                        salida[tabla] = connection.execute(text(sql), params).scalar()
+                        fila = connection.execute(text(sql), params).mappings().first()
+                        salida[tabla] = {
+                            "llegada": fila["llegada"] if fila else None,
+                            "sensor": fila["sensor"] if fila else None,
+                        }
                     except Exception:
-                        salida[tabla] = None
+                        salida[tabla] = {"llegada": None, "sensor": None}
         except Exception:
             return {}
         return salida
+
+
+    @staticmethod
+    def _drift_days(sensor: object, llegada: object) -> float | None:
+        """Dias que el reloj del equipo va por detras de la hora real.
+
+        Cero significa que el sensor esta en hora. Un valor alto significa que
+        sus marcas de tiempo no sirven para ordenar una serie temporal.
+        """
+        from datetime import date as _date
+
+        def _dt(valor: object) -> datetime | None:
+            if isinstance(valor, datetime):
+                return valor
+            if isinstance(valor, _date):
+                return datetime(valor.year, valor.month, valor.day)
+            return None
+
+        a, b = _dt(sensor), _dt(llegada)
+        if a is None or b is None:
+            return None
+        dias = (b - a).total_seconds() / 86400.0
+        return round(dias, 1) if abs(dias) >= 0.5 else 0.0
 
     def _freshness(self, raw: object) -> dict[str, Any]:
         """Cuantos dias tiene el dato mas reciente que alimenta un modelo.
@@ -614,8 +663,13 @@ class ModelAlertDashboardService:
         can_emit = eligible and policy_payload["status"] == "approved"
         tabla = self._MODEL_SOURCE_TABLE.get(code)
         origen = getattr(self, "_source_dates", {}) or {}
-        freshness = self._freshness(origen.get(tabla))
+        fechas = origen.get(tabla) or {}
+        # La antiguedad real es cuando el dato llego, no la hora del sensor.
+        freshness = self._freshness(fechas.get("llegada"))
         freshness["source_table"] = tabla
+        freshness["clock_drift_days"] = self._drift_days(
+            fechas.get("sensor"), fechas.get("llegada")
+        )
         model_status = str(model.get("status") or "sin_datos")
         missing_inputs = [] if eligible else list(inputs)
         if eligible:
