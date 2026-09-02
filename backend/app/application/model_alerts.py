@@ -135,20 +135,6 @@ class ModelAlertDashboardService:
         ]
         events = self._eligible_events(cards, pond_id)
         observations = self._technical_observations(dashboard)
-        for card in cards:
-            drift = (card.get("data_freshness") or {}).get("clock_drift_days")
-            tabla = (card.get("data_freshness") or {}).get("source_table")
-            if drift and abs(drift) >= 1:
-                aviso = (
-                    f"El reloj del sensor de {tabla} va {abs(drift):.0f} dias por detras de la "
-                    "hora real: los datos llegan al dia pero con la marca de tiempo equivocada."
-                )
-                if aviso not in [o.get("message") for o in observations if isinstance(o, dict)]:
-                    observations.append({
-                        "kind": "sensor_clock_drift",
-                        "message": aviso,
-                        "productive": False,
-                    })
 
         return {
             "schema_version": "1.0",
