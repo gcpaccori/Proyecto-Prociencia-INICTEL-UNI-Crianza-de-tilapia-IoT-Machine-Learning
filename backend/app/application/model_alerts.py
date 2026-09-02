@@ -124,6 +124,7 @@ class ModelAlertDashboardService:
         ica = raw_models.get(ICA_MODEL_CODE, {})
         light = self._light_context(pond_id, window_hours)
         photoperiod = self._photoperiod_context(pond_id, window_hours)
+        self._source_dates = self._source_freshness(pond_id)
 
         cards = [
             self._ica_card(ica, policies.get(ICA_MODEL_CODE)),
@@ -195,19 +196,18 @@ class ModelAlertDashboardService:
             inputs=["Temperatura", "Longitud", "Peso", "Fecha de biometria"],
             model=model,
             policy=policy,
-            eligible=False,
+            eligible=has_projection,
             unavailable_detail="Faltan temperatura valida o biometria para contrastar la trayectoria.",
-            eligible_detail="La proyeccion queda en modo sombra hasta validar una banda local de error con biometria real.",
+            eligible_detail=(
+                "Proyecta la ganancia diaria con la ecuacion de Soderberg y la biometria real. "
+                "Revisa la antiguedad del dato antes de tomar una decision."
+            ),
             prediction_value=self._number(model.get("current_value")),
             prediction_for=None,
         )
-        card["maturity"] = "shadow" if has_projection else "blocked_inputs"
-        card["can_emit"] = False
-        card["status_detail"] = (
-            "La proyeccion esta disponible para revision tecnica; todavia no puede emitir una alarma."
-            if has_projection
-            else card["status_detail"]
-        )
+        if not has_projection:
+            card["maturity"] = "blocked_inputs"
+            card["can_emit"] = False
         return card
 
     def _svm_card(
@@ -513,6 +513,86 @@ class ModelAlertDashboardService:
         )
         return card
 
+
+
+    #: Que tabla legacy alimenta a cada modelo.
+    _MODEL_SOURCE_TABLE = {
+        ICA_MODEL_CODE: "parametro_aguas",
+        SVM_MODEL_CODE: "parametro_aguas",
+        GROWTH_MODEL_CODE: "biometrias",
+        LIGHT_MODEL_CODE: "parametro_ambientes",
+        PHOTOPERIOD_MODEL_CODE: "parametro_ambientes",
+    }
+
+    def _source_freshness(self, pond_id: str) -> dict[str, Any]:
+        """Ultima fecha real de cada tabla de origen, leida del legacy."""
+        engine = getattr(self.store, "engine", None)
+        legacy = getattr(self.store, "legacy_database_name", None)
+        if engine is None or not legacy:
+            return {}
+        safe = str(legacy).replace("`", "``")
+        pond = self._pond_number(pond_id)
+        consultas = {
+            "parametro_aguas": f"SELECT MAX(fecha_medicion) FROM `{safe}`.`parametro_aguas`"
+                               + (" WHERE piscina_id = :pond" if pond is not None else ""),
+            "parametro_ambientes": f"SELECT MAX(fecha_medicion) FROM `{safe}`.`parametro_ambientes`"
+                                   + (" WHERE piscina_id = :pond" if pond is not None else ""),
+            "biometrias": f"SELECT MAX(fecha_muestreo) FROM `{safe}`.`biometrias`",
+        }
+        salida: dict[str, Any] = {}
+        try:
+            with engine.connect() as connection:
+                for tabla, sql in consultas.items():
+                    try:
+                        params = {"pond": pond} if ":pond" in sql else {}
+                        salida[tabla] = connection.execute(text(sql), params).scalar()
+                    except Exception:
+                        salida[tabla] = None
+        except Exception:
+            return {}
+        return salida
+
+    def _freshness(self, raw: object) -> dict[str, Any]:
+        """Cuantos dias tiene el dato mas reciente que alimenta un modelo.
+
+        Un modelo puede estar calculando bien y aun asi estar leyendo datos de
+        hace semanas. En vez de bloquearlo por eso, se deja que proyecte y se
+        marca la antiguedad para que quien mire sepa de cuando habla.
+        """
+        from datetime import date as _date
+
+        moment = None
+        if isinstance(raw, datetime):
+            moment = raw
+        elif isinstance(raw, _date):
+            # biometrias.fecha_muestreo es DATE: se toma el final del dia
+            moment = datetime(raw.year, raw.month, raw.day, 23, 59, tzinfo=timezone.utc)
+        elif isinstance(raw, str) and raw:
+            moment = self._parse_datetime(raw)
+        if moment is None:
+            return {"timestamp": None, "age_hours": None, "level": "unknown",
+                    "label": "Sin fecha del ultimo dato"}
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - moment).total_seconds() / 3600.0
+        age = max(0.0, age)
+        if age <= 6:
+            level, label = "fresh", "Dato reciente"
+        elif age <= 48:
+            hours = int(round(age))
+            level, label = "recent", f"Dato de hace {hours} h"
+        else:
+            days = int(round(age / 24.0))
+            level = "stale" if age <= 24 * 30 else "very_stale"
+            label = f"Dato de hace {days} dias"
+        return {
+            "timestamp": moment.isoformat(),
+            "age_hours": round(age, 1),
+            "age_days": round(age / 24.0, 1),
+            "level": level,
+            "label": label,
+        }
+
     def _card(
         self,
         *,
@@ -532,6 +612,10 @@ class ModelAlertDashboardService:
     ) -> dict[str, Any]:
         policy_payload = self._policy_payload(policy)
         can_emit = eligible and policy_payload["status"] == "approved"
+        tabla = self._MODEL_SOURCE_TABLE.get(code)
+        origen = getattr(self, "_source_dates", {}) or {}
+        freshness = self._freshness(origen.get(tabla))
+        freshness["source_table"] = tabla
         model_status = str(model.get("status") or "sin_datos")
         missing_inputs = [] if eligible else list(inputs)
         if eligible:
@@ -573,6 +657,7 @@ class ModelAlertDashboardService:
             "usage": model.get("usage"),
             "traceability": model.get("traceability"),
             "policy": policy_payload,
+            "data_freshness": freshness,
         }
 
     def _eligible_events(self, cards: list[dict[str, Any]], pond_id: str) -> list[dict[str, Any]]:
