@@ -620,15 +620,42 @@ class RealModelsService:
     ) -> dict[str, object]:
         prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
         latest = self._latest_observed(prepared["aligned"], ["water_temperature_c"])
+        # La ecuacion de Soderberg solo esta validada entre 21 y 30 C. Si la
+        # ultima lectura se sale de ahi, en vez de no proyectar nada se busca
+        # hacia atras la ultima lectura que si cae dentro del dominio y se deja
+        # constancia de cual se uso. Asi hay proyeccion revisable en lugar de
+        # una tarjeta vacia.
+        temperature_fallback: dict[str, object] | None = None
+        current_temperature = float(latest["values"]["water_temperature_c"])
+        if not (21.0 <= current_temperature <= 30.0):
+            for row in reversed(prepared["aligned"]):
+                candidate = row.get("values", {}).get("water_temperature_c")
+                if candidate is None:
+                    continue
+                if 21.0 <= float(candidate) <= 30.0:
+                    temperature_fallback = {
+                        "observed_temperature_c": current_temperature,
+                        "used_temperature_c": float(candidate),
+                        "used_at": row.get("timestamp").isoformat() if row.get("timestamp") else None,
+                        "reason": (
+                            f"La temperatura actual ({current_temperature:.2f} C) esta fuera del "
+                            "dominio validado de 21 a 30 C. Se proyecta con la ultima lectura "
+                            "que si cae dentro."
+                        ),
+                    }
+                    latest = {**latest, "values": {**latest["values"], "water_temperature_c": float(candidate)}}
+                    break
         sample = self.store.latest_biometric_sample(pond_id)
         detail_samples = self.store.list_biometric_detail_samples(pond_id)
         weight_length_model = fit_local_weight_length(detail_samples)
+        # Un dia de proyeccion no dice nada en una campania de meses: si no se
+        # pide un horizonte explicito se proyecta a 30 dias.
         result = tilapia_growth_temperature(
             float(latest["values"]["water_temperature_c"]),
             float(sample["average_length_mm"])
             if sample and sample.get("average_length_mm") is not None
             else None,
-            projection_days,
+            projection_days if projection_days is not None else 30,
             weight_length_model,
         )
         return {
@@ -636,8 +663,10 @@ class RealModelsService:
             "pond_id": pond_id,
             **result,
             "sampled_at": sample["sampled_at"].isoformat() if sample else None,
+            "temperature_fallback": temperature_fallback,
             "traceability": {
                 "formula": "delta_L=-1.6707+0.09682T",
+                "temperature_fallback": temperature_fallback,
                 "temperature_source": "parametro_aguas.temperatura",
                 "biometric_source": sample.get("source") if sample else None,
                 "weight_length_source": "sismapiscis.biometria_detalles",

@@ -351,7 +351,7 @@ class ModelAlertDashboardService:
             return empty
 
         try:
-            indoor = pp.build_indoor_profile(observations, window_hours=max(24, window_hours))
+            indoor = pp.build_indoor_profile(observations, window_hours=max(72, window_hours))
         except pp.PhotoperiodDataUnavailable as error:
             return {"available": False, "reason": str(error)}
 
