@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 
 
@@ -182,6 +183,145 @@ def soderberg_delta_l(
 def nile_tilapia_weight_from_length(length_mm: float) -> float:
     length = _positive("length_mm", length_mm)
     return 1.861e-8 * length**3
+
+
+# --------------------------------------------------------------------------
+# Modelo peso-longitud entrenado
+#
+# Con biometria_detalles hay una medicion por pez, no una por muestreo: eso
+# da suficientes puntos para entrenar y validar de verdad. Se compara contra
+# dos referencias para no confundir "ajusta" con "sirve":
+#
+#   media       predecir siempre el peso medio. Si el modelo no le gana, sobra.
+#   isometrico  la ley cubica clasica W = a*L^3, sin aprender el exponente.
+# --------------------------------------------------------------------------
+
+def _fit_allometry(points: list[tuple[float, float]]) -> tuple[float, float] | None:
+    """Ajusta W = a*L^b por minimos cuadrados sobre los logaritmos."""
+    if len(points) < 2:
+        return None
+    log_l = [math.log(l) for l, _ in points]
+    log_w = [math.log(w) for _, w in points]
+    mean_l = sum(log_l) / len(log_l)
+    mean_w = sum(log_w) / len(log_w)
+    denom = sum((v - mean_l) ** 2 for v in log_l)
+    if denom == 0:
+        return None
+    b = sum((l - mean_l) * (w - mean_w) for l, w in zip(log_l, log_w, strict=True)) / denom
+    a = math.exp(mean_w - b * mean_l)
+    return a, b
+
+
+def _fit_isometric(points: list[tuple[float, float]]) -> float:
+    """Ley cubica: solo se ajusta el coeficiente, el exponente se fija en 3."""
+    num = sum(w * (l ** 3) for l, w in points)
+    den = sum((l ** 3) ** 2 for l in (l for l, _ in points))
+    return num / den if den else 0.0
+
+
+def _scores(observed: list[float], predicted: list[float]) -> dict[str, float]:
+    n = len(observed)
+    if n == 0:
+        return {"r2": 0.0, "mae": 0.0, "rmse": 0.0}
+    mean = sum(observed) / n
+    ss_res = sum((o - p) ** 2 for o, p in zip(observed, predicted, strict=True))
+    ss_tot = sum((o - mean) ** 2 for o in observed)
+    return {
+        "r2": 1.0 if ss_tot == 0 else 1.0 - ss_res / ss_tot,
+        "mae": sum(abs(o - p) for o, p in zip(observed, predicted, strict=True)) / n,
+        "rmse": math.sqrt(ss_res / n),
+    }
+
+
+def train_weight_length_model(
+    samples: list[dict[str, object]],
+    *,
+    test_fraction: float = 0.25,
+    seed: int = 20260902,
+) -> dict[str, object] | None:
+    """Entrena y valida W = a*L^b sobre peces medidos uno a uno."""
+    points: list[tuple[float, float]] = []
+    for sample in samples:
+        length = sample.get("length_mm")
+        weight = sample.get("weight_g")
+        if length is None or weight is None:
+            continue
+        l, w = float(length), float(weight)
+        if l > 0 and w > 0:
+            points.append((l, w))
+
+    if len(points) < 12 or len({l for l, _ in points}) < 4:
+        return None
+
+    # Reparto reproducible: mismo seed, mismo reparto, resultados comparables
+    # entre ejecuciones.
+    orden = list(range(len(points)))
+    random.Random(seed).shuffle(orden)
+    corte = max(3, int(round(len(points) * test_fraction)))
+    idx_test = set(orden[:corte])
+    train = [pt for i, pt in enumerate(points) if i not in idx_test]
+    test = [pt for i, pt in enumerate(points) if i in idx_test]
+    if len(train) < 8 or len(test) < 3:
+        return None
+
+    ajuste = _fit_allometry(train)
+    if ajuste is None:
+        return None
+    a, b = ajuste
+
+    obs = [w for _, w in test]
+    pred_modelo = [a * (l ** b) for l, _ in test]
+    media_train = sum(w for _, w in train) / len(train)
+    pred_media = [media_train] * len(test)
+    a_iso = _fit_isometric(train)
+    pred_iso = [a_iso * (l ** 3) for l, _ in test]
+
+    m_modelo = _scores(obs, pred_modelo)
+    m_media = _scores(obs, pred_media)
+    m_iso = _scores(obs, pred_iso)
+
+    gana_media = m_modelo["mae"] < m_media["mae"]
+    gana_iso = m_modelo["mae"] < m_iso["mae"]
+
+    return {
+        "coefficient": a,
+        "exponent": b,
+        "sample_size": len(points),
+        "train_size": len(train),
+        "test_size": len(test),
+        "seed": seed,
+        "metrics": {
+            "test_r2": round(m_modelo["r2"], 4),
+            "test_mae_g": round(m_modelo["mae"], 4),
+            "test_rmse_g": round(m_modelo["rmse"], 4),
+        },
+        "baselines": {
+            "media": {
+                "test_mae_g": round(m_media["mae"], 4),
+                "test_r2": round(m_media["r2"], 4),
+            },
+            "isometrico_cubico": {
+                "test_mae_g": round(m_iso["mae"], 4),
+                "test_r2": round(m_iso["r2"], 4),
+                "coefficient": a_iso,
+            },
+        },
+        "beats_mean_baseline": gana_media,
+        "beats_isometric_baseline": gana_iso,
+        "usable": gana_media,
+        "verdict": (
+            "Le gana a predecir siempre el peso medio y tambien a la ley cubica clasica."
+            if gana_media and gana_iso
+            else "Le gana al peso medio, pero no a la ley cubica clasica."
+            if gana_media
+            else "No le gana a predecir siempre el peso medio: no aporta."
+        ),
+        "formula": f"W = {a:.6g} * L^{b:.4f}",
+        "note": (
+            "Exponente cercano a 3 indica crecimiento isometrico; por debajo, "
+            "los peces se alargan mas de lo que engordan."
+        ),
+    }
 
 
 def fit_local_weight_length(

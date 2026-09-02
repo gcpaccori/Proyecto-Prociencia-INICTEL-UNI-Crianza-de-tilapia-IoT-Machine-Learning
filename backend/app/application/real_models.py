@@ -24,6 +24,7 @@ from backend.app.models_engine.deterministic.dissolved_oxygen import (
 )
 from backend.app.models_engine.deterministic.growth import (
     fit_local_weight_length,
+    train_weight_length_model,
     tilapia_growth_temperature,
 )
 from backend.app.models_engine.deterministic.water_quality import (
@@ -650,6 +651,8 @@ class RealModelsService:
         sample = self.store.latest_biometric_sample(pond_id)
         detail_samples = self.store.list_biometric_detail_samples(pond_id)
         weight_length_model = fit_local_weight_length(detail_samples)
+        # Mismo ajuste, pero validado fuera de muestra y contra dos baselines.
+        weight_length_ml = train_weight_length_model(detail_samples)
         # Un dia de proyeccion no dice nada en una campania de meses: si no se
         # pide un horizonte explicito se proyecta a 30 dias.
         result = tilapia_growth_temperature(
@@ -675,6 +678,7 @@ class RealModelsService:
                 "biometric_source": sample.get("source") if sample else None,
                 "weight_length_source": "sismapiscis.biometria_detalles",
                 "weight_length_sample_count": len(detail_samples),
+            "weight_length_ml": weight_length_ml,
             },
         }
 
@@ -842,7 +846,9 @@ class RealModelsService:
         self,
         pond_id: str,
         window_hours: int = 168,
-        growth_projection_days: int = 7,
+        # Una semana no deja ver la curva: la tilapia crece ~1 mm/dia. Un mes
+        # ya muestra la aceleracion del peso, que va con el cubo de la longitud.
+        growth_projection_days: int = 30,
     ) -> dict[str, object]:
         prepared = self._prepare_dataset(
             pond_id,
@@ -945,6 +951,11 @@ class RealModelsService:
             display_forecast,
         )
         growth_projection_points = self._growth_rate_projection_points(
+            latest_od["timestamp"],
+            growth,
+            growth_projection_days,
+        )
+        growth_length_points, growth_weight_points = self._growth_trajectory_points(
             latest_od["timestamp"],
             growth,
             growth_projection_days,
@@ -1114,6 +1125,11 @@ class RealModelsService:
                 # tarjeta no puede explicar por que la ganancia cae.
                 "potential_daily_length_gain_mm_day": growth.get("potential_daily_length_gain_mm_day"),
                 "limiting_factors": growth.get("limiting_factors"),
+                "projection_series": {
+                    "horizon_days": growth_projection_days,
+                    "length_mm": growth_length_points,
+                    "weight_g": growth_weight_points,
+                },
                 "unit": "mm/dia",
                 "engine": "FastAPI / formula deterministica con factores limitantes",
                 "source": "Informe 017",
@@ -1122,15 +1138,15 @@ class RealModelsService:
                 "metrics": {"r2": growth["source_r2"]},
                 "forecast": self._growth_forecast_rows(growth),
                 "chart": self._chart(
-                    "Ganancia diaria de crecimiento: medida y proyeccion",
+                    f"Trayectoria proyectada a {growth_projection_days} dias",
                     [
-                        self._series("Ganancia calculada", growth_history, "#7c3aed"),
                         self._series(
-                            "Proyeccion con temperatura actual",
-                            growth_projection_points,
+                            "Peso proyectado (g)",
+                            growth_weight_points,
                             "#7c3aed",
                             dashed=True,
                         ),
+                        self._series("Ganancia diaria medida", growth_history, "#c4b5fd"),
                     ],
                     "mm/dia",
                     focus_from=(
@@ -1754,6 +1770,41 @@ class RealModelsService:
             [forecast["issued_at"], current],
             [forecast["target_time"], projected],
         ]
+
+    @staticmethod
+    def _growth_trajectory_points(
+        issued_at: datetime,
+        growth: dict[str, object],
+        days: int,
+    ) -> tuple[list[list[object]], list[list[object]]]:
+        """Longitud y peso proyectados dia a dia durante el horizonte."""
+        daily_gain = growth.get("daily_length_gain_mm_day")
+        projection = growth.get("length_projection")
+        if growth.get("status") != "calculated" or daily_gain is None:
+            return [], []
+        if not isinstance(projection, dict):
+            return [], []
+        initial = projection.get("initial_length_mm")
+        if initial is None:
+            return [], []
+
+        modelo = growth.get("weight_length_model") or {}
+        coeficiente = modelo.get("coefficient")
+        exponente = modelo.get("exponent")
+
+        longitudes: list[list[object]] = []
+        pesos: list[list[object]] = []
+        # Un punto por dia: con 30 dias son 31 puntos, suficiente para que la
+        # curva se lea sin cargar el grafico.
+        paso = max(1, days // 30)
+        for dia in range(0, days + 1, paso):
+            momento = (issued_at + timedelta(days=dia)).isoformat()
+            longitud = float(initial) + float(daily_gain) * dia
+            longitudes.append([momento, round(longitud, 2)])
+            if coeficiente is not None and exponente is not None and longitud > 0:
+                peso = float(coeficiente) * (longitud ** float(exponente))
+                pesos.append([momento, round(peso, 2)])
+        return longitudes, pesos
 
     @staticmethod
     def _growth_rate_projection_points(

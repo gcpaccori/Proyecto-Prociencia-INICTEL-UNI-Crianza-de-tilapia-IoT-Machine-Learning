@@ -96,7 +96,8 @@ class ModelAlertDashboardService:
         return RealModelsService(self.store).dashboard(
             pond_id,
             window_hours=window_hours,
-            growth_projection_days=7,
+            # Un mes: con 7 dias la curva de peso es casi una recta y no se ve.
+            growth_projection_days=30,
         )
 
     @classmethod
@@ -699,6 +700,7 @@ class ModelAlertDashboardService:
             # Que esta frenando al modelo respecto de su potencial, cuando aplica.
             "limiting_factors": model.get("limiting_factors"),
             "potential_value": model.get("potential_daily_length_gain_mm_day"),
+            "projection_series": model.get("projection_series"),
             "policy": policy_payload,
             "data_freshness": freshness,
         }
