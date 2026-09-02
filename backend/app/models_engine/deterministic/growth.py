@@ -240,11 +240,68 @@ def local_weight_from_length(
     )
 
 
+
+# --------------------------------------------------------------------------
+# Factores limitantes del crecimiento
+#
+# La temperatura marca el potencial. El oxigeno y el pH solo pueden restarle.
+# Los umbrales coinciden con la tabla parametro_bandas del propio sistema.
+# --------------------------------------------------------------------------
+
+#: Por debajo de esto la tilapia no gana peso: toda la energia se va en respirar.
+OXYGEN_NO_GROWTH_MG_L = 2.0
+#: Desde aqui el oxigeno deja de limitar. Coincide con el umbral critico de 4
+#: mg/L de parametro_bandas mas un margen de seguridad.
+OXYGEN_FULL_GROWTH_MG_L = 5.0
+
+#: Banda optima de pH, identica a la de parametro_bandas.
+PH_OPTIMAL_LOW, PH_OPTIMAL_HIGH = 6.5, 8.5
+#: Fuera de estos extremos se considera que no hay crecimiento.
+PH_LETHAL_LOW, PH_LETHAL_HIGH = 5.0, 10.0
+
+
+def oxygen_growth_factor(dissolved_oxygen_mg_l: float | None) -> tuple[float, str]:
+    """Cuanto del crecimiento potencial permite el oxigeno disponible."""
+    if dissolved_oxygen_mg_l is None:
+        return 1.0, "Sin lectura de oxigeno: no se aplica limitacion."
+    od = float(dissolved_oxygen_mg_l)
+    if od <= OXYGEN_NO_GROWTH_MG_L:
+        return 0.0, f"Oxigeno en {od:.2f} mg/L: por debajo de {OXYGEN_NO_GROWTH_MG_L:.0f} el pez no crece."
+    if od >= OXYGEN_FULL_GROWTH_MG_L:
+        return 1.0, f"Oxigeno en {od:.2f} mg/L: suficiente, no limita."
+    factor = (od - OXYGEN_NO_GROWTH_MG_L) / (OXYGEN_FULL_GROWTH_MG_L - OXYGEN_NO_GROWTH_MG_L)
+    return factor, (
+        f"Oxigeno en {od:.2f} mg/L: limita el crecimiento al {factor * 100:.0f}% de su potencial."
+    )
+
+
+def ph_growth_factor(ph: float | None) -> tuple[float, str]:
+    """Cuanto del crecimiento potencial permite el pH del agua."""
+    if ph is None:
+        return 1.0, "Sin lectura de pH: no se aplica limitacion."
+    valor = float(ph)
+    if PH_OPTIMAL_LOW <= valor <= PH_OPTIMAL_HIGH:
+        return 1.0, f"pH en {valor:.2f}: dentro del rango optimo, no limita."
+    if valor <= PH_LETHAL_LOW or valor >= PH_LETHAL_HIGH:
+        return 0.0, f"pH en {valor:.2f}: fuera del rango tolerable, no hay crecimiento."
+    if valor < PH_OPTIMAL_LOW:
+        factor = (valor - PH_LETHAL_LOW) / (PH_OPTIMAL_LOW - PH_LETHAL_LOW)
+        motivo = "acido"
+    else:
+        factor = (PH_LETHAL_HIGH - valor) / (PH_LETHAL_HIGH - PH_OPTIMAL_HIGH)
+        motivo = "alcalino"
+    return factor, (
+        f"pH en {valor:.2f}, demasiado {motivo}: limita el crecimiento al {factor * 100:.0f}%."
+    )
+
+
 def tilapia_growth_temperature(
     temperature_c: float,
     initial_length_mm: float | None = None,
     projection_days: int | None = None,
     weight_length_model: dict[str, float | int] | None = None,
+    dissolved_oxygen_mg_l: float | None = None,
+    ph: float | None = None,
 ) -> dict[str, object]:
     temperature = float(temperature_c)
     validated_range = [21.0, 30.0]
@@ -259,7 +316,31 @@ def tilapia_growth_temperature(
         }
 
     growth = soderberg_delta_l(temperature, "nile tilapia")
-    daily_gain = float(growth["daily_length_gain_mm_day"])
+    potential_gain = float(growth["daily_length_gain_mm_day"])
+
+    # La temperatura marca el techo; el oxigeno y el pH solo pueden bajarlo.
+    oxygen_factor, oxygen_detail = oxygen_growth_factor(dissolved_oxygen_mg_l)
+    ph_factor, ph_detail = ph_growth_factor(ph)
+    combined_factor = oxygen_factor * ph_factor
+    daily_gain = potential_gain * combined_factor
+    limiting_factors = {
+        "oxygen": {
+            "value_mg_l": dissolved_oxygen_mg_l,
+            "factor": round(oxygen_factor, 4),
+            "detail": oxygen_detail,
+        },
+        "ph": {
+            "value": ph,
+            "factor": round(ph_factor, 4),
+            "detail": ph_detail,
+        },
+        "combined_factor": round(combined_factor, 4),
+        "limited_by": (
+            "oxigeno" if oxygen_factor < ph_factor
+            else "pH" if ph_factor < oxygen_factor
+            else ("ninguno" if combined_factor >= 0.999 else "oxigeno y pH")
+        ),
+    }
     projection = None
     note = "No se proyecto longitud porque no existe una longitud inicial real."
     if initial_length_mm is not None:
@@ -287,6 +368,8 @@ def tilapia_growth_temperature(
         "status": "calculated",
         "temperature_c": temperature,
         "daily_length_gain_mm_day": daily_gain,
+        "potential_daily_length_gain_mm_day": potential_gain,
+        "limiting_factors": limiting_factors,
         "validated_temperature_range_c": validated_range,
         "source_r2": 0.95,
         "length_projection": projection,

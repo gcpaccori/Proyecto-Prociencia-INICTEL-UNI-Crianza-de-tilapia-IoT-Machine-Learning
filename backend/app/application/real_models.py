@@ -619,7 +619,9 @@ class RealModelsService:
         projection_days: int | None = None,
     ) -> dict[str, object]:
         prepared = prepared or self._prepare_dataset(pond_id, False, 4000)
-        latest = self._latest_observed(prepared["aligned"], ["water_temperature_c"])
+        latest = self._latest_observed(
+            prepared["aligned"], ["water_temperature_c", "dissolved_oxygen_mg_l", "ph"]
+        )
         # La ecuacion de Soderberg solo esta validada entre 21 y 30 C. Si la
         # ultima lectura se sale de ahi, en vez de no proyectar nada se busca
         # hacia atras la ultima lectura que si cae dentro del dominio y se deja
@@ -657,6 +659,8 @@ class RealModelsService:
             else None,
             projection_days if projection_days is not None else 30,
             weight_length_model,
+            dissolved_oxygen_mg_l=latest["values"].get("dissolved_oxygen_mg_l"),
+            ph=latest["values"].get("ph"),
         )
         return {
             "model_code": GROWTH_MODEL_CODE,
@@ -1106,8 +1110,12 @@ class RealModelsService:
                 "message": "Ganancia diaria de longitud dentro del dominio publicado de 21 a 30 C.",
                 "status": "calculado" if growth["status"] == "calculated" else "sin_datos",
                 "current_value": growth["daily_length_gain_mm_day"],
+                # Potencial por temperatura y que lo esta frenando: sin esto la
+                # tarjeta no puede explicar por que la ganancia cae.
+                "potential_daily_length_gain_mm_day": growth.get("potential_daily_length_gain_mm_day"),
+                "limiting_factors": growth.get("limiting_factors"),
                 "unit": "mm/dia",
-                "engine": "FastAPI / formula deterministica",
+                "engine": "FastAPI / formula deterministica con factores limitantes",
                 "source": "Informe 017",
                 "asset_id": None,
                 "version": "formula-v1",

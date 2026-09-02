@@ -696,6 +696,9 @@ class ModelAlertDashboardService:
             "formula": model.get("formula"),
             "usage": model.get("usage"),
             "traceability": model.get("traceability"),
+            # Que esta frenando al modelo respecto de su potencial, cuando aplica.
+            "limiting_factors": model.get("limiting_factors"),
+            "potential_value": model.get("potential_daily_length_gain_mm_day"),
             "policy": policy_payload,
             "data_freshness": freshness,
         }
