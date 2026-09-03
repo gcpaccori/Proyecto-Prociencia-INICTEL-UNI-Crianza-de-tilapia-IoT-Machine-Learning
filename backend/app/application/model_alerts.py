@@ -36,6 +36,7 @@ ICA_MODEL_CODE = "WATER_QUALITY_INDEX_ICA"
 LIGHT_MODEL_CODE = "LIGHT_FEED_RESPONSE_CLASSIFIER_V1"
 PHOTOPERIOD_MODEL_CODE = "PHOTOPERIOD_GREENHOUSE_V1"
 CONDITION_MODEL_CODE = "TILAPIA_WEIGHT_LENGTH_ML"
+LIGHT_FORECAST_MODEL_CODE = "LIGHT_FORECAST_SVR_12H"
 
 _CACHE_SECONDS = 120.0
 _STALE_SECONDS = 1800.0
@@ -148,6 +149,7 @@ class ModelAlertDashboardService:
             self._light_card(light, policies.get(LIGHT_MODEL_CODE)),
             self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
             self._condition_card(growth, policies.get(CONDITION_MODEL_CODE)),
+            self._light_forecast_card(pond_id, policies.get(LIGHT_FORECAST_MODEL_CODE)),
         ]
         events = self._eligible_events(cards, pond_id)
         observations = self._technical_observations(dashboard)
@@ -282,6 +284,96 @@ class ModelAlertDashboardService:
         else:
             card["maturity"] = "collecting_data"
             card["can_emit"] = False
+        return card
+
+    def _light_rows(self, pond_id: str) -> list[dict[str, Any]]:
+        """Historial completo de ambiente, que es lo que necesita el entrenamiento."""
+        engine = getattr(self.store, "engine", None)
+        legacy = getattr(self.store, "legacy_database_name", None)
+        pond_number = self._pond_number(pond_id)
+        if engine is None or not legacy or pond_number is None:
+            return []
+        safe = str(legacy).replace("`", "``")
+        try:
+            with engine.connect() as connection:
+                filas = connection.execute(
+                    text(
+                        f"""
+                        SELECT fecha_medicion, iluminancia, temperatura_ambiente, humedad_ambiente
+                        FROM `{safe}`.`parametro_ambientes`
+                        WHERE piscina_id = :piscina_id AND iluminancia IS NOT NULL
+                        ORDER BY fecha_medicion ASC
+                        """
+                    ),
+                    {"piscina_id": pond_number},
+                ).mappings().all()
+        except Exception:
+            return []
+        return [dict(fila) for fila in filas]
+
+    def _light_forecast_card(
+        self, pond_id: str, policy: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Prevision de luz a doce horas, entrenada con el propio vivero.
+
+        Se queda en sombra a proposito: le gana a la persistencia y a la media
+        horaria, pero se entreno con nueve dias de sensor. Calcula y se deja
+        ver; no dispara nada hasta que haya historial suficiente para fiarse.
+        """
+        from backend.app.models_engine.ml.light_forecast import (
+            predict_next_light,
+            train_light_forecast_model,
+        )
+
+        filas = self._light_rows(pond_id)
+        entrenado = train_light_forecast_model(filas) if filas else None
+        prevision = predict_next_light(entrenado, filas) if entrenado else None
+        listo = bool(entrenado and prevision and entrenado.get("beats_baselines"))
+
+        modelo = {
+            "current_value": prevision.get("predicted_lux") if prevision else None,
+            "unit": "lux",
+            "status": "calculado" if listo else "sin_datos",
+            "asset_id": None,
+            "version": None,
+        }
+        card = self._card(
+            code=LIGHT_FORECAST_MODEL_CODE,
+            alarm_code="MODEL_LIGHT_FORECAST_DEFICIT",
+            name="Prevision de luz a 12 horas",
+            purpose=(
+                "Anticipa la iluminancia dentro del vivero doce horas por delante, "
+                "para saber de noche si manana temprano habra luz para alimentar."
+            ),
+            horizon="12 horas",
+            inputs=["Iluminancia", "Temperatura ambiente", "Humedad ambiente", "Hora del dia"],
+            model=modelo,
+            policy=policy,
+            eligible=False,
+            unavailable_detail=(
+                "Necesita al menos ciento cincuenta ventanas completas de sensor para entrenarse."
+            ),
+            eligible_detail="",
+            prediction_value=prevision.get("predicted_lux") if prevision else None,
+            prediction_for=prevision.get("for_at") if prevision else None,
+        )
+        if listo:
+            card["maturity"] = "shadow"
+            card["status_detail"] = (
+                "Calcula y se puede contrastar, pero todavia no dispara alarmas: "
+                "se entreno con nueve dias de sensor y hace falta mas historial."
+            )
+            card["missing_inputs"] = []
+            card["traceability"] = {
+                **(card.get("traceability") or {}),
+                "light_forecast_ml": {
+                    k: v for k, v in entrenado.items() if k != "modelo"
+                },
+            }
+            card["light_forecast"] = prevision
+        else:
+            card["maturity"] = "collecting_data"
+        card["can_emit"] = False
         return card
 
     def _svm_card(
@@ -608,6 +700,7 @@ class ModelAlertDashboardService:
         LIGHT_MODEL_CODE: "parametro_ambientes",
         PHOTOPERIOD_MODEL_CODE: "parametro_ambientes",
         CONDITION_MODEL_CODE: "biometrias",
+        LIGHT_FORECAST_MODEL_CODE: "parametro_ambientes",
     }
 
     def _source_freshness(self, pond_id: str) -> dict[str, Any]:
