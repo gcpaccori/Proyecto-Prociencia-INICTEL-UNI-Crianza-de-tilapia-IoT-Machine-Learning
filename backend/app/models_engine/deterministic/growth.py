@@ -525,3 +525,91 @@ def haskell_feed_rate(
 ) -> float:
     length = _positive("fish_length", fish_length)
     return (3.0 * _non_negative("feed_conversion_ratio", feed_conversion_ratio) * _non_negative("daily_length_gain", daily_length_gain) / length) * 100.0
+
+
+def assess_body_condition(
+    samples: list[dict[str, object]],
+    model: dict[str, object] | None,
+) -> dict[str, object] | None:
+    """Contrasta el peso real de cada pez con el que predice la curva entrenada.
+
+    La curva W = a*L^b dice cuanto deberia pesar un pez de esa talla en esta
+    piscigranja. Dividir el peso medido entre ese peso esperado da el factor de
+    condicion relativo: 1.00 es exactamente lo previsto, por debajo son peces
+    mas flacos de lo que su talla promete y por encima, mas robustos.
+
+    Se mira solo el ultimo muestreo, porque mezclar muestreos de fechas
+    distintas promediaria estados que no son comparables. Se exige un minimo de
+    peces para que una sola medida rara no dispare nada.
+    """
+    if not model:
+        return None
+    try:
+        a = float(model["coefficient"])
+        b = float(model["exponent"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if a <= 0:
+        return None
+
+    fechas = [s.get("sampled_at") for s in samples if s.get("sampled_at") is not None]
+    if not fechas:
+        return None
+    ultima = max(fechas)
+
+    ratios: list[float] = []
+    for muestra in samples:
+        if muestra.get("sampled_at") != ultima:
+            continue
+        length, weight = muestra.get("length_mm"), muestra.get("weight_g")
+        if length is None or weight is None:
+            continue
+        l, w = float(length), float(weight)
+        if l <= 0 or w <= 0:
+            continue
+        esperado = a * (l ** b)
+        if esperado > 0:
+            ratios.append(w / esperado)
+
+    # Con menos de ocho peces el promedio es demasiado fragil para avisar.
+    if len(ratios) < 8:
+        return None
+
+    ratios.sort()
+    n = len(ratios)
+    kn = sum(ratios) / n
+    mediana = ratios[n // 2] if n % 2 else (ratios[n // 2 - 1] + ratios[n // 2]) / 2.0
+    flacos = sum(1 for r in ratios if r < 0.90)
+    robustos = sum(1 for r in ratios if r > 1.10)
+
+    if kn < 0.90:
+        estado = "bajo"
+        lectura = (
+            f"Los peces pesan un {round((1 - kn) * 100)}% menos de lo que su talla promete. "
+            "Suele apuntar a alimentacion corta, competencia o algo que les esta pasando factura."
+        )
+    elif kn > 1.10:
+        estado = "alto"
+        lectura = (
+            f"Los peces pesan un {round((kn - 1) * 100)}% mas de lo previsto para su talla. "
+            "Conviene revisar que la medida de longitud se este tomando igual que siempre."
+        )
+    else:
+        estado = "normal"
+        lectura = "El peso acompana a la talla: la condicion corporal esta donde se espera."
+
+    return {
+        "condition_factor": round(kn, 4),
+        "median_factor": round(mediana, 4),
+        "sample_size": n,
+        "below_count": flacos,
+        "above_count": robustos,
+        "state": estado,
+        "reading": lectura,
+        "sampled_at": ultima.isoformat() if hasattr(ultima, "isoformat") else str(ultima),
+        "expected_from": f"W = {a:.6g} * L^{b:.4f}",
+        "note": (
+            "Peso medido dividido entre el que predice la curva entrenada con los peces "
+            "de esta misma piscigranja. Se usa solo el ultimo muestreo."
+        ),
+    }

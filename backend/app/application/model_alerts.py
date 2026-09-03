@@ -35,6 +35,7 @@ GROWTH_MODEL_CODE = "TILAPIA_GROWTH_TEMPERATURE"
 ICA_MODEL_CODE = "WATER_QUALITY_INDEX_ICA"
 LIGHT_MODEL_CODE = "LIGHT_FEED_RESPONSE_CLASSIFIER_V1"
 PHOTOPERIOD_MODEL_CODE = "PHOTOPERIOD_GREENHOUSE_V1"
+CONDITION_MODEL_CODE = "TILAPIA_WEIGHT_LENGTH_ML"
 
 _CACHE_SECONDS = 120.0
 _STALE_SECONDS = 1800.0
@@ -146,6 +147,7 @@ class ModelAlertDashboardService:
             self._svm_card(svm, dashboard, policies.get(SVM_MODEL_CODE)),
             self._light_card(light, policies.get(LIGHT_MODEL_CODE)),
             self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
+            self._condition_card(growth, policies.get(CONDITION_MODEL_CODE)),
         ]
         events = self._eligible_events(cards, pond_id)
         observations = self._technical_observations(dashboard)
@@ -221,6 +223,64 @@ class ModelAlertDashboardService:
         )
         if not has_projection:
             card["maturity"] = "blocked_inputs"
+            card["can_emit"] = False
+        return card
+
+    def _condition_card(
+        self, growth: dict[str, Any], policy: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """El unico modelo entrenado con peces de esta piscigranja, como alarma.
+
+        La curva W = a*L^b se ajusta con biometria_detalles y se valida fuera de
+        muestra. Aqui se le da la vuelta: en vez de predecir el peso, se usa
+        para juzgar el que se midio. Un lote que pesa bastante menos de lo que
+        su talla promete es una senal temprana, y aparece antes de que la
+        longitud media se resienta.
+        """
+        condicion = (growth or {}).get("body_condition") or {}
+        entrenado = ((growth or {}).get("traceability") or {}).get("weight_length_ml")
+        listo = bool(condicion) and bool(entrenado)
+
+        kn = condicion.get("condition_factor")
+        modelo = {
+            "current_value": kn,
+            "unit": "x lo esperado",
+            "status": "calculado" if listo else "sin_datos",
+            "asset_id": None,
+            "version": None,
+        }
+
+        card = self._card(
+            code=CONDITION_MODEL_CODE,
+            alarm_code="MODEL_CONDITION_DEVIATION",
+            name="Condicion corporal frente a la curva entrenada",
+            purpose=(
+                "Compara el peso medido de cada pez con el que predice la curva "
+                "peso-longitud ajustada con los peces de esta piscigranja."
+            ),
+            horizon="Ultimo muestreo",
+            inputs=["Longitud por pez", "Peso por pez", "Fecha de biometria"],
+            model=modelo,
+            policy=policy,
+            eligible=listo,
+            unavailable_detail=(
+                "Hacen falta al menos ocho peces medidos uno a uno en el ultimo "
+                "muestreo, y una curva entrenada con la que compararlos."
+            ),
+            eligible_detail=(
+                "Avisa cuando el lote se aparta de la curva propia mas de un 10%. "
+                "Por debajo suele ser alimentacion o competencia; por encima, "
+                "conviene revisar como se esta midiendo la longitud."
+            ),
+            prediction_value=self._number(kn),
+            prediction_for=condicion.get("sampled_at"),
+        )
+        if listo:
+            card["body_condition"] = condicion
+            card["traceability"] = {**(card.get("traceability") or {}),
+                                    "weight_length_ml": entrenado}
+        else:
+            card["maturity"] = "collecting_data"
             card["can_emit"] = False
         return card
 
@@ -536,6 +596,7 @@ class ModelAlertDashboardService:
         GROWTH_MODEL_CODE: "biometrias",
         LIGHT_MODEL_CODE: "parametro_ambientes",
         PHOTOPERIOD_MODEL_CODE: "parametro_ambientes",
+        CONDITION_MODEL_CODE: "biometrias",
     }
 
     def _source_freshness(self, pond_id: str) -> dict[str, Any]:

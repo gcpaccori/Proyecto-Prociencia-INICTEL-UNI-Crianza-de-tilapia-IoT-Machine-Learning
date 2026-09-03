@@ -26,6 +26,7 @@ from backend.app.models_engine.deterministic.growth import (
     fit_local_weight_length,
     train_weight_length_model,
     tilapia_growth_temperature,
+    assess_body_condition,
 )
 from backend.app.models_engine.deterministic.water_quality import (
     biofloc_water_quality_readiness,
@@ -653,6 +654,9 @@ class RealModelsService:
         weight_length_model = fit_local_weight_length(detail_samples)
         # Mismo ajuste, pero validado fuera de muestra y contra dos baselines.
         weight_length_ml = train_weight_length_model(detail_samples)
+        # La curva entrenada sirve tambien de vara de medir: cuanto se aparta
+        # el peso real del que esa curva predice para la talla observada.
+        body_condition = assess_body_condition(detail_samples, weight_length_ml)
         # Un dia de proyeccion no dice nada en una campania de meses: si no se
         # pide un horizonte explicito se proyecta a 30 dias.
         result = tilapia_growth_temperature(
@@ -669,6 +673,7 @@ class RealModelsService:
             "model_code": GROWTH_MODEL_CODE,
             "pond_id": pond_id,
             **result,
+            "body_condition": body_condition,
             "sampled_at": sample["sampled_at"].isoformat() if sample else None,
             "temperature_fallback": temperature_fallback,
             "traceability": {
@@ -1124,6 +1129,9 @@ class RealModelsService:
                 # Potencial por temperatura y que lo esta frenando: sin esto la
                 # tarjeta no puede explicar por que la ganancia cae.
                 "potential_daily_length_gain_mm_day": growth.get("potential_daily_length_gain_mm_day"),
+                # La condicion corporal viaja con el crecimiento: la calcula la
+                # misma curva entrenada y de ahi la toma su tarjeta de alarma.
+                "body_condition": growth.get("body_condition"),
                 "limiting_factors": growth.get("limiting_factors"),
                 "projection_series": {
                     "horizon_days": growth_projection_days,
