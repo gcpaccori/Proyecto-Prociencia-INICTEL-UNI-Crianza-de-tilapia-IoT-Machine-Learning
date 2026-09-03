@@ -19,6 +19,7 @@ import time
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from hashlib import sha256
 from threading import Lock
 from time import monotonic
@@ -37,6 +38,18 @@ PHOTOPERIOD_MODEL_CODE = "PHOTOPERIOD_GREENHOUSE_V1"
 
 _CACHE_SECONDS = 120.0
 _STALE_SECONDS = 1800.0
+
+# Laravel guarda created_at/updated_at en la hora de la piscigranja
+# (app.timezone = America/Lima), sin marca de zona. MySQL en cambio corre en
+# UTC. Si se lee una de esas fechas como si fuera UTC, todo dato parece cinco
+# horas mas viejo de lo que es y una lectura de hace diez minutos se anuncia
+# como de hace cinco horas. Se declara la zona real para no restar de mas.
+_TZ_LOCAL = ZoneInfo("America/Lima")
+
+
+def _asumir_hora_local(momento: datetime) -> datetime:
+    """Una fecha sin zona viene de la base: es hora local, no UTC."""
+    return momento.replace(tzinfo=_TZ_LOCAL) if momento.tzinfo is None else momento
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="model-alerts")
 _cache: dict[tuple[int, str, int], tuple[float, dict[str, Any]]] = {}
 _inflight: set[tuple[int, str, int]] = set()
@@ -602,14 +615,13 @@ class ModelAlertDashboardService:
             moment = raw
         elif isinstance(raw, _date):
             # biometrias.fecha_muestreo es DATE: se toma el final del dia
-            moment = datetime(raw.year, raw.month, raw.day, 23, 59, tzinfo=timezone.utc)
+            moment = datetime(raw.year, raw.month, raw.day, 23, 59, tzinfo=_TZ_LOCAL)
         elif isinstance(raw, str) and raw:
             moment = self._parse_datetime(raw)
         if moment is None:
             return {"timestamp": None, "age_hours": None, "level": "unknown",
                     "label": "Sin fecha del ultimo dato"}
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=timezone.utc)
+        moment = _asumir_hora_local(moment)
         age = (datetime.now(timezone.utc) - moment).total_seconds() / 3600.0
         age = max(0.0, age)
         if age <= 6:
@@ -1076,7 +1088,7 @@ class ModelAlertDashboardService:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=_TZ_LOCAL)
 
     @staticmethod
     def _iso_now() -> str:
