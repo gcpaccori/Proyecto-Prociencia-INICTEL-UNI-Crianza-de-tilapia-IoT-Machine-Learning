@@ -208,3 +208,142 @@ def predict_next_light(modelo_entrenado, lecturas):
         "for_at": (ultima + timedelta(minutes=BIN_MINUTOS * PASOS_HORIZONTE)).isoformat(),
         "current_lux": round(lux, 1),
     }
+
+
+UMBRAL_ALIMENTACION_LUX = 30.0
+
+
+def train_light_adequacy_classifier(lecturas, seed=20260903):
+    """Clasifica si dentro de doce horas habra luz para que los peces coman.
+
+    La etiqueta no es "los peces comieron" -eso nadie lo anota- sino algo que
+    el propio sensor mide: si en ese momento futuro la iluminancia llega o no
+    al minimo con el que la tilapia distingue el alimento. Predecir el futuro a
+    partir del pasado con una etiqueta medida no tiene nada de circular.
+
+    Treinta lux es el umbral: por debajo, la tilapia -que se alimenta por
+    vista- deja de detectar el pienso y la toma se desaprovecha.
+
+    Se contrasta contra tres referencias: que la luz siga como esta, decir
+    siempre la clase mayoritaria, y mirar solo la hora del dia.
+    """
+    try:
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import SVC
+    except ImportError:
+        return None
+
+    grid = _rejilla(lecturas)
+    X, y_lux, horas = _muestras(grid)
+    if len(X) < MINIMO_MUESTRAS:
+        return None
+    y = [1 if valor >= UMBRAL_ALIMENTACION_LUX else 0 for valor in y_lux]
+
+    n = len(X)
+    corte_train = int(n * 0.70)
+    corte_val = int(n * 0.85)
+    Xtr, ytr = X[:corte_train], y[:corte_train]
+    Xte, yte = X[corte_val:], y[corte_val:]
+    if len(Xte) < 25 or len(set(ytr)) < 2:
+        return None
+
+    def _f1(observado, predicho):
+        tp = sum(1 for o, p in zip(observado, predicho) if o == 1 and p == 1)
+        fp = sum(1 for o, p in zip(observado, predicho) if o == 0 and p == 1)
+        fn = sum(1 for o, p in zip(observado, predicho) if o == 1 and p == 0)
+        prec = tp / (tp + fp) if tp + fp else 0.0
+        rec = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0
+        acierto = sum(1 for o, p in zip(observado, predicho) if o == p) / len(observado)
+        return round(f1, 4), round(acierto, 4)
+
+    persistencia = [1 if fila[0] >= UMBRAL_ALIMENTACION_LUX else 0 for fila in Xte]
+    mayoritaria_clase = 1 if sum(ytr) * 2 >= len(ytr) else 0
+    mayoritaria = [mayoritaria_clase] * len(yte)
+    por_hora = {}
+    for i in range(corte_train):
+        por_hora.setdefault(int(horas[i]), []).append(y[i])
+    regla = {h: (1 if sum(v) * 2 >= len(v) else 0) for h, v in por_hora.items()}
+    solo_hora = [regla.get(int(horas[corte_val + i]), mayoritaria_clase) for i in range(len(yte))]
+
+    clf = make_pipeline(
+        StandardScaler(),
+        SVC(kernel="rbf", C=10.0, gamma="scale", class_weight="balanced", probability=True,
+            random_state=seed),
+    )
+    clf.fit(Xtr, ytr)
+    pred = [int(v) for v in clf.predict(Xte)]
+
+    f1_modelo, ac_modelo = _f1(yte, pred)
+    referencias = {
+        "persistencia": dict(zip(("test_f1", "test_accuracy"), _f1(yte, persistencia))),
+        "clase_mayoritaria": dict(zip(("test_f1", "test_accuracy"), _f1(yte, mayoritaria))),
+        "solo_la_hora": dict(zip(("test_f1", "test_accuracy"), _f1(yte, solo_hora))),
+    }
+    gana = all(f1_modelo > ref["test_f1"] for ref in referencias.values())
+
+    return {
+        "modelo": clf,
+        "threshold_lux": UMBRAL_ALIMENTACION_LUX,
+        "horizon_hours": PASOS_HORIZONTE * BIN_MINUTOS / 60.0,
+        "sample_size": n,
+        "train_size": corte_train,
+        "test_size": len(Xte),
+        "positive_rate": round(sum(y) / len(y), 4),
+        "metrics": {"test_f1": f1_modelo, "test_accuracy": ac_modelo},
+        "baselines": referencias,
+        "beats_baselines": gana,
+        "verdict": (
+            "Acierta el {:.0f}% con F1 {:.3f}, frente a {:.3f} de la persistencia y {:.3f} "
+            "de mirar solo la hora.".format(
+                100 * ac_modelo, f1_modelo,
+                referencias["persistencia"]["test_f1"],
+                referencias["solo_la_hora"]["test_f1"],
+            )
+            if gana
+            else "No mejora a las referencias; no conviene usarlo para decidir."
+        ),
+        "note": (
+            "Etiqueta medida por el propio sensor: si la iluminancia de dentro de doce horas "
+            "llega o no a {:.0f} lux, el minimo con el que la tilapia ve el alimento. Reparto "
+            "temporal, sin mezclar futuro con pasado.".format(UMBRAL_ALIMENTACION_LUX)
+        ),
+    }
+
+
+def predict_light_adequacy(entrenado, lecturas):
+    """Dice si la proxima toma de dentro de doce horas tendra luz suficiente."""
+    if not entrenado or "modelo" not in entrenado:
+        return None
+    grid = _rejilla(lecturas)
+    if not grid:
+        return None
+    ultima = max(grid)
+    previas = [ultima - timedelta(minutes=BIN_MINUTOS * d) for d in DESFASES]
+    if any(p not in grid for p in previas):
+        return None
+    fila, _, lux = _fila_de(grid, ultima, previas)
+    modelo = entrenado["modelo"]
+    try:
+        clase = int(modelo.predict([fila])[0])
+        try:
+            confianza = float(max(modelo.predict_proba([fila])[0]))
+        except Exception:
+            confianza = None
+    except Exception:
+        return None
+    momento = ultima + timedelta(minutes=BIN_MINUTOS * PASOS_HORIZONTE)
+    return {
+        "suficiente": bool(clase),
+        "confianza": round(confianza, 3) if confianza is not None else None,
+        "para": momento.isoformat(),
+        "desde": ultima.isoformat(),
+        "lux_actual": round(lux, 1),
+        "umbral_lux": UMBRAL_ALIMENTACION_LUX,
+        "lectura": (
+            "Dentro de doce horas habra luz suficiente para alimentar."
+            if clase
+            else "Dentro de doce horas no habra luz suficiente: conviene mover esa toma."
+        ),
+    }

@@ -146,7 +146,7 @@ class ModelAlertDashboardService:
             self._ica_card(ica, policies.get(ICA_MODEL_CODE)),
             self._growth_card(growth, policies.get(GROWTH_MODEL_CODE)),
             self._svm_card(svm, dashboard, policies.get(SVM_MODEL_CODE)),
-            self._light_card(light, policies.get(LIGHT_MODEL_CODE), self._racion_plan(pond_id)),
+            self._light_card(light, policies.get(LIGHT_MODEL_CODE), self._racion_plan(pond_id), pond_id),
             self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
             self._condition_card(growth, policies.get(CONDITION_MODEL_CODE)),
             self._light_forecast_card(pond_id, policies.get(LIGHT_FORECAST_MODEL_CODE)),
@@ -470,58 +470,76 @@ class ModelAlertDashboardService:
     def _light_card(
         self, light: dict[str, Any], policy: dict[str, Any] | None,
         racion: dict[str, Any] | None = None,
+        pond_id: str | None = None,
     ) -> dict[str, Any]:
+        """Clasificador de luz para alimentar, entrenado con el propio vivero.
+
+        Durante mucho tiempo esta tarjeta estuvo vacia esperando una etiqueta
+        que nadie iba a escribir: cuanto comieron los peces despues de cada
+        toma. Pero la pregunta util admite otra etiqueta, y esa si la mide el
+        sensor: si a la hora de la proxima toma habra luz suficiente para que
+        la tilapia vea el pienso. Predecir eso doce horas antes deja margen
+        para mover la toma.
+        """
+        from backend.app.models_engine.ml.light_forecast import (
+            predict_light_adequacy,
+            train_light_adequacy_classifier,
+        )
+
         sensor_registered = bool(light.get("sensor_registered"))
+        filas = self._light_rows(pond_id) if pond_id else []
+        entrenado = train_light_adequacy_classifier(filas) if filas else None
+        veredicto = predict_light_adequacy(entrenado, filas) if entrenado else None
+        listo = bool(entrenado and veredicto and entrenado.get("beats_baselines"))
+
         card = self._card(
             code=LIGHT_MODEL_CODE,
             alarm_code="MODEL_LIGHT_FEED_RESPONSE_RISK",
-            name="Luz y respuesta alimentaria",
-            purpose="Relaciona la luz subacuatica medida, el fotoperiodo y el estado del agua con la respuesta a la alimentacion.",
-            horizon="Siguiente evento de alimentacion",
-            inputs=["Luz subacuatica", "Fotoperiodo", "Hora", "OD", "Temperatura", "Racion", "Respuesta observada"],
+            name="Luz suficiente para alimentar",
+            purpose=(
+                "Anticipa doce horas antes si la proxima toma caera con luz suficiente "
+                "para que la tilapia, que se alimenta por vista, distinga el pienso."
+            ),
+            horizon="12 horas",
+            inputs=["Iluminancia", "Temperatura ambiente", "Humedad ambiente", "Hora del dia"],
             model={
-                "status": "collecting_data" if sensor_registered else "sin_sensor",
                 "current_value": light.get("latest_value"),
                 "unit": light.get("unit", "lux"),
+                "status": "calculado" if listo else ("collecting_data" if sensor_registered else "sin_sensor"),
                 "chart": light.get("chart"),
-                "formula": {
-                    "latex": r"P(\\mathrm{consumo})=f(\\mathrm{lux},\\mathrm{fotoperiodo},OD,T,\\mathrm{racion})",
-                    "detail": "La formula representa el futuro clasificador; no existe un artefacto entrenado ni una prediccion productiva mientras falten etiquetas reales de consumo.",
-                },
-                "usage": {
-                    "status": "collecting_data",
-                    "label": "Recopilacion de evidencia",
-                    "detail": "El sensor de luz debe registrar lecturas vinculadas a racion y respuesta alimentaria antes de entrenar.",
-                },
             },
             policy=policy,
-            eligible=False,
+            eligible=listo,
             unavailable_detail=(
-                # El luxometro si existe: lo que falta para entrenar es la otra
-                # mitad del par, saber cuanto se les echo y cuanto comieron.
-                "La luz se mide y la racion esta planificada. Falta lo unico que nadie "
-                "registra: que se observo tras cada toma. Sin eso no hay nada que aprender."
+                "Hacen falta al menos ciento cincuenta ventanas completas de sensor "
+                "para entrenar el clasificador."
                 if sensor_registered
                 else "No hay un sensor de luz disponible en esta piscina."
             ),
-            eligible_detail="Hay sensor de luz, pero faltan etiquetas de consumo o remanente para entrenar y validar el modelo.",
+            eligible_detail=(
+                "Avisa cuando la toma de dentro de doce horas vaya a caer por debajo "
+                "de los treinta lux con los que la tilapia ve el alimento."
+            ),
             prediction_value=self._number(light.get("latest_value")),
-            prediction_for=light.get("latest_at"),
+            prediction_for=veredicto.get("para") if veredicto else light.get("latest_at"),
         )
-        card["maturity"] = "collecting_data" if sensor_registered else "blocked_inputs"
-        card["can_emit"] = False
-        if sensor_registered:
-            # La luz se mide y la racion esta planificada en la campania. Lo
-            # unico que de verdad no existe es la respuesta: nadie anota que
-            # paso despues de cada toma, y sin ese dato no hay nada que
-            # aprender. Se probo deducirla del consumo de oxigeno y no se
-            # sostiene: la correlacion aparente (+0.31) se va a -0.06 al mirar
-            # solo horas de luz, o sea que era el ciclo dia/noche, no la comida.
-            card["missing_inputs"] = ["Respuesta observada tras cada toma"]
+        if listo:
+            card["light_adequacy"] = veredicto
+            card["traceability"] = {
+                **(card.get("traceability") or {}),
+                "light_adequacy_ml": {k: v for k, v in entrenado.items() if k != "modelo"},
+            }
+            card["missing_inputs"] = []
+            if racion:
+                card["feeding_plan"] = racion
+            if not card["can_emit"]:
+                card["maturity"] = "ready_for_policy"
+        else:
+            card["maturity"] = "collecting_data" if sensor_registered else "blocked_inputs"
+            card["can_emit"] = False
             if racion:
                 card["feeding_plan"] = racion
         return card
-
 
     # ------------------------------------------------------------------
     # Fotoperiodo de vivero: sensor interior contra luz natural de Open-Meteo
