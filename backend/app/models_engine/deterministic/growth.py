@@ -558,6 +558,7 @@ def assess_body_condition(
     ultima = max(fechas)
 
     ratios: list[float] = []
+    puntos: list[tuple[float, float]] = []
     for muestra in samples:
         if muestra.get("sampled_at") != ultima:
             continue
@@ -570,6 +571,8 @@ def assess_body_condition(
         esperado = a * (l ** b)
         if esperado > 0:
             ratios.append(w / esperado)
+            # se guardan para poder dibujar cada pez contra la curva
+            puntos.append((l, w))
 
     # Con menos de ocho peces el promedio es demasiado fragil para avisar.
     if len(ratios) < 8:
@@ -599,6 +602,7 @@ def assess_body_condition(
         lectura = "El peso acompana a la talla: la condicion corporal esta donde se espera."
 
     return {
+        "points": puntos,
         "condition_factor": round(kn, 4),
         "median_factor": round(mediana, 4),
         "sample_size": n,

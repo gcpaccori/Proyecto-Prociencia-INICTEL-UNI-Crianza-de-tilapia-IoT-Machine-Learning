@@ -146,7 +146,7 @@ class ModelAlertDashboardService:
             self._ica_card(ica, policies.get(ICA_MODEL_CODE)),
             self._growth_card(growth, policies.get(GROWTH_MODEL_CODE)),
             self._svm_card(svm, dashboard, policies.get(SVM_MODEL_CODE)),
-            self._light_card(light, policies.get(LIGHT_MODEL_CODE)),
+            self._light_card(light, policies.get(LIGHT_MODEL_CODE), self._racion_plan(pond_id)),
             self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
             self._condition_card(growth, policies.get(CONDITION_MODEL_CODE)),
             self._light_forecast_card(pond_id, policies.get(LIGHT_FORECAST_MODEL_CODE)),
@@ -281,10 +281,62 @@ class ModelAlertDashboardService:
             card["body_condition"] = condicion
             card["traceability"] = {**(card.get("traceability") or {}),
                                     "weight_length_ml": entrenado}
+            grafico = self._condition_chart(condicion, entrenado)
+            if grafico:
+                card["chart"] = grafico
+                card["projection"] = {**(card.get("projection") or {}), "chart": grafico}
         else:
             card["maturity"] = "collecting_data"
             card["can_emit"] = False
         return card
+
+    def _racion_plan(self, pond_id: str) -> dict[str, Any] | None:
+        """Plan de alimentacion de la campania, que si esta registrado.
+
+        Las tablas alimentacion_* estan vacias, pero parametros_produccions
+        guarda la racion diaria, en cuantas tomas se reparte y cuanto toca por
+        toma. Es la mitad de la pareja que necesita el clasificador: falta la
+        otra, que es que se observo despues de cada toma.
+        """
+        engine = getattr(self.store, "engine", None)
+        legacy = getattr(self.store, "legacy_database_name", None)
+        pond_number = self._pond_number(pond_id)
+        if engine is None or not legacy or pond_number is None:
+            return None
+        safe = str(legacy).replace("`", "``")
+        try:
+            with engine.connect() as connection:
+                fila = connection.execute(
+                    text(
+                        f"""
+                        SELECT pp.racion_diaria_gr, pp.frecuencia_diaria,
+                               pp.cantidad_por_frecuencia_gr, pp.foto_periodo_horas_dia
+                        FROM `{safe}`.`parametros_produccions` pp
+                        JOIN `{safe}`.`campania_etapas` ce ON ce.id = pp.campania_etapa_id
+                        WHERE ce.piscina_id = :piscina_id AND pp.deleted_at IS NULL
+                        ORDER BY pp.id DESC LIMIT 1
+                        """
+                    ),
+                    {"piscina_id": pond_number},
+                ).mappings().first()
+        except Exception:
+            return None
+        if not fila:
+            return None
+        try:
+            return {
+                "racion_diaria_g": round(float(fila["racion_diaria_gr"]), 1),
+                "tomas_por_dia": int(fila["frecuencia_diaria"]),
+                "gramos_por_toma": round(float(fila["cantidad_por_frecuencia_gr"]), 1),
+                "fotoperiodo_previsto_h": (
+                    float(fila["foto_periodo_horas_dia"])
+                    if fila["foto_periodo_horas_dia"] is not None
+                    else None
+                ),
+                "fuente": "parametros_produccions",
+            }
+        except (TypeError, ValueError):
+            return None
 
     def _light_rows(self, pond_id: str) -> list[dict[str, Any]]:
         """Historial completo de ambiente, que es lo que necesita el entrenamiento."""
@@ -371,6 +423,12 @@ class ModelAlertDashboardService:
                 },
             }
             card["light_forecast"] = prevision
+            grafico = self._light_forecast_chart(
+                self._legacy_light_observations(pond_id, 72), prevision
+            )
+            if grafico:
+                card["chart"] = grafico
+                card["projection"] = {**(card.get("projection") or {}), "chart": grafico}
         else:
             card["maturity"] = "collecting_data"
         card["can_emit"] = False
@@ -409,7 +467,10 @@ class ModelAlertDashboardService:
         card["metrics"] = forecast.get("metrics") or card.get("metrics", {})
         return card
 
-    def _light_card(self, light: dict[str, Any], policy: dict[str, Any] | None) -> dict[str, Any]:
+    def _light_card(
+        self, light: dict[str, Any], policy: dict[str, Any] | None,
+        racion: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         sensor_registered = bool(light.get("sensor_registered"))
         card = self._card(
             code=LIGHT_MODEL_CODE,
@@ -438,8 +499,8 @@ class ModelAlertDashboardService:
             unavailable_detail=(
                 # El luxometro si existe: lo que falta para entrenar es la otra
                 # mitad del par, saber cuanto se les echo y cuanto comieron.
-                "Hay lecturas de luz, pero el clasificador necesita ademas la racion "
-                "servida y la respuesta observada para poder entrenarse."
+                "La luz se mide y la racion esta planificada. Falta lo unico que nadie "
+                "registra: que se observo tras cada toma. Sin eso no hay nada que aprender."
                 if sensor_registered
                 else "No hay un sensor de luz disponible en esta piscina."
             ),
@@ -450,9 +511,15 @@ class ModelAlertDashboardService:
         card["maturity"] = "collecting_data" if sensor_registered else "blocked_inputs"
         card["can_emit"] = False
         if sensor_registered:
-            # Con el luxometro dando lecturas, lo unico que falta de verdad es
-            # la etiqueta: cuanto se sirvio y como respondieron los peces.
-            card["missing_inputs"] = ["Racion", "Respuesta observada"]
+            # La luz se mide y la racion esta planificada en la campania. Lo
+            # unico que de verdad no existe es la respuesta: nadie anota que
+            # paso despues de cada toma, y sin ese dato no hay nada que
+            # aprender. Se probo deducirla del consumo de oxigeno y no se
+            # sostiene: la correlacion aparente (+0.31) se va a -0.06 al mirar
+            # solo horas de luz, o sea que era el ciclo dia/noche, no la comida.
+            card["missing_inputs"] = ["Respuesta observada tras cada toma"]
+            if racion:
+                card["feeding_plan"] = racion
         return card
 
 
@@ -1165,6 +1232,97 @@ class ModelAlertDashboardService:
                     "itemStyle": {"color": "#f59e0b"},
                     "data": [[timestamp, value] for timestamp, value, _ in observations],
                 }
+            ],
+        }
+
+    @staticmethod
+    def _condition_chart(condicion: dict[str, Any], entrenado: dict[str, Any]) -> dict[str, Any]:
+        """Cada pez del ultimo muestreo contra la curva que aprendio el modelo.
+
+        La nube son los peces reales y la linea lo que la curva predice para
+        cada talla. Ver donde cae cada punto respecto a la linea explica el
+        numero mucho mejor que el numero solo.
+        """
+        puntos = condicion.get("points") or []
+        if not puntos:
+            return {}
+        try:
+            a = float(entrenado["coefficient"])
+            b = float(entrenado["exponent"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        largos = [p[0] for p in puntos]
+        lo, hi = min(largos), max(largos)
+        curva = []
+        pasos = 40
+        for i in range(pasos + 1):
+            L = lo + (hi - lo) * i / pasos
+            curva.append([round(L, 1), round(a * (L ** b), 1)])
+        return {
+            "title": {"text": "Peso medido frente a la curva entrenada"},
+            "tooltip": {"trigger": "item"},
+            "xAxis": {"type": "value", "name": "longitud (mm)", "min": round(lo * 0.95), "max": round(hi * 1.05)},
+            "yAxis": {"type": "value", "name": "peso (g)"},
+            "series": [
+                {
+                    "name": "Curva aprendida",
+                    "type": "line",
+                    "showSymbol": False,
+                    "smooth": True,
+                    "lineStyle": {"width": 2, "color": "#7c3aed"},
+                    "itemStyle": {"color": "#7c3aed"},
+                    "data": curva,
+                },
+                {
+                    "name": "Peces medidos",
+                    "type": "scatter",
+                    "symbolSize": 9,
+                    "itemStyle": {"color": "#ea580c", "opacity": 0.75},
+                    "data": [[round(p[0], 1), round(p[1], 1)] for p in puntos],
+                },
+            ],
+        }
+
+    @staticmethod
+    def _light_forecast_chart(
+        observaciones: list[tuple[str, float, str]], prevision: dict[str, Any]
+    ) -> dict[str, Any]:
+        """La luz medida y, al final, el punto que el modelo anticipa."""
+        if not observaciones:
+            return {}
+        serie = [[t, v] for t, v, _ in observaciones]
+        punto = []
+        if prevision and prevision.get("for_at") is not None:
+            punto = [[prevision["for_at"], prevision.get("predicted_lux")]]
+            if serie:
+                # se enlaza con la ultima medida para que la linea no salga suelta
+                punto = [[serie[-1][0], serie[-1][1]]] + punto
+        return {
+            "title": {"text": "Luz medida y prevision a 12 horas"},
+            "tooltip": {"trigger": "axis"},
+            "legend": {"bottom": 0},
+            "dataZoom": [{"type": "inside"}, {"type": "slider"}],
+            "xAxis": {"type": "time"},
+            "yAxis": {"type": "value", "name": "lux"},
+            "series": [
+                {
+                    "name": "Medido",
+                    "type": "line",
+                    "showSymbol": False,
+                    "smooth": True,
+                    "lineStyle": {"width": 2, "color": "#f59e0b"},
+                    "itemStyle": {"color": "#f59e0b"},
+                    "data": serie,
+                },
+                {
+                    "name": "Previsto",
+                    "type": "line",
+                    "smooth": False,
+                    "symbolSize": 10,
+                    "lineStyle": {"width": 2, "type": "dashed", "color": "#7c3aed"},
+                    "itemStyle": {"color": "#7c3aed"},
+                    "data": punto,
+                },
             ],
         }
 
