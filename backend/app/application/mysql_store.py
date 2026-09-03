@@ -47,9 +47,12 @@ class MySQLBackendStore:
         self,
         engine: Engine,
         legacy_database_name: str | None = None,
+        policy_database_name: str | None = None,
     ) -> None:
         self.engine = engine
         self.legacy_database_name = legacy_database_name
+        # Si nadie la fija, las politicas se leen donde los datos.
+        self.policy_database_name = policy_database_name or legacy_database_name
         self._last_legacy_sync_at = 0.0
         self._legacy_sync_lock = Lock()
 

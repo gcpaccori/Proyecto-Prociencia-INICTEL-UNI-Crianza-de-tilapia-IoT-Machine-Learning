@@ -9,6 +9,7 @@ def create_backend_store(settings: Settings) -> InMemoryBackendStore | MySQLBack
         store = MySQLBackendStore(
             engine=engine,
             legacy_database_name=settings.legacy_database_name,
+            policy_database_name=settings.policy_database_name,
         )
         store.initialize()
         return store

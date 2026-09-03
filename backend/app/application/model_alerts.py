@@ -323,7 +323,7 @@ class ModelAlertDashboardService:
             code=LIGHT_MODEL_CODE,
             alarm_code="MODEL_LIGHT_FEED_RESPONSE_RISK",
             name="Luz y respuesta alimentaria",
-            purpose="Preparara una prediccion de respuesta alimentaria con luz subacuatica, fotoperiodo y contexto del agua.",
+            purpose="Relaciona la luz subacuatica medida, el fotoperiodo y el estado del agua con la respuesta a la alimentacion.",
             horizon="Siguiente evento de alimentacion",
             inputs=["Luz subacuatica", "Fotoperiodo", "Hora", "OD", "Temperatura", "Racion", "Respuesta observada"],
             model={
@@ -343,13 +343,24 @@ class ModelAlertDashboardService:
             },
             policy=policy,
             eligible=False,
-            unavailable_detail="No hay un sensor de luz disponible en esta piscina.",
+            unavailable_detail=(
+                # El luxometro si existe: lo que falta para entrenar es la otra
+                # mitad del par, saber cuanto se les echo y cuanto comieron.
+                "Hay lecturas de luz, pero el clasificador necesita ademas la racion "
+                "servida y la respuesta observada para poder entrenarse."
+                if sensor_registered
+                else "No hay un sensor de luz disponible en esta piscina."
+            ),
             eligible_detail="Hay sensor de luz, pero faltan etiquetas de consumo o remanente para entrenar y validar el modelo.",
             prediction_value=self._number(light.get("latest_value")),
             prediction_for=light.get("latest_at"),
         )
         card["maturity"] = "collecting_data" if sensor_registered else "blocked_inputs"
         card["can_emit"] = False
+        if sensor_registered:
+            # Con el luxometro dando lecturas, lo unico que falta de verdad es
+            # la etiqueta: cuanto se sirvio y como respondieron los peces.
+            card["missing_inputs"] = ["Racion", "Respuesta observada"]
         return card
 
 
@@ -912,6 +923,56 @@ class ModelAlertDashboardService:
             "policy": {"code": None, "status": "draft", "condition": "Pendiente de lectura de politica aprobada.", "severity": None},
         }
 
+    def _legacy_light_observations(
+        self, pond_id: str, window_hours: int
+    ) -> list[tuple[str, float, str]]:
+        """Lecturas de luz del esquema antiguo.
+
+        El registro de sensores y la tabla de mediciones limpias son del
+        esquema nuevo y aqui estan vacios, pero la piscina si tiene luxometro:
+        sus lecturas caen en parametro_ambientes.iluminancia, que es de donde
+        bebe el fotoperiodo. Se leen de ahi en lugar de dar el sensor por
+        ausente.
+        """
+        engine = getattr(self.store, "engine", None)
+        legacy = getattr(self.store, "legacy_database_name", None)
+        pond_number = self._pond_number(pond_id)
+        if engine is None or not legacy or pond_number is None:
+            return []
+        safe = str(legacy).replace("`", "``")
+        try:
+            with engine.connect() as connection:
+                rows = connection.execute(
+                    text(
+                        f"""
+                        SELECT fecha_medicion, iluminancia
+                        FROM `{safe}`.`parametro_ambientes`
+                        WHERE piscina_id = :piscina_id AND iluminancia IS NOT NULL
+                        ORDER BY fecha_medicion DESC
+                        LIMIT 5000
+                        """
+                    ),
+                    {"piscina_id": pond_number},
+                ).mappings().all()
+        except Exception:
+            return []
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        observaciones: list[tuple[str, float, str]] = []
+        for row in rows:
+            moment, value = row.get("fecha_medicion"), row.get("iluminancia")
+            if moment is None or value is None:
+                continue
+            momento = _asumir_hora_local(moment) if isinstance(moment, datetime) else None
+            if momento is None or momento < cutoff:
+                continue
+            try:
+                observaciones.append((momento.isoformat(), float(value), "lux"))
+            except (TypeError, ValueError):
+                continue
+        observaciones.sort(key=lambda fila: fila[0])
+        return observaciones
+
     def _light_context(self, pond_id: str, window_hours: int) -> dict[str, Any]:
         try:
             sensors = self.store.list_sensors(pond_id)
@@ -943,6 +1004,9 @@ class ModelAlertDashboardService:
                 continue
             observations.append((timestamp, value, str(self._field(measurement, "standard_unit") or "lux")))
         observations.sort(key=lambda row: row[0])
+        # Si el esquema nuevo no tiene nada, la luz sigue estando: se lee del antiguo.
+        if not observations:
+            observations = self._legacy_light_observations(pond_id, window_hours)
         latest = observations[-1] if observations else None
         unit = latest[2] if latest else "lux"
 
@@ -1014,7 +1078,10 @@ class ModelAlertDashboardService:
     def _policies_for_pond(self, pond_id: str) -> dict[str, dict[str, Any]]:
         """Read Laravel-owned policies without making the backend own their table."""
         engine = getattr(self.store, "engine", None)
-        legacy_database = getattr(self.store, "legacy_database_name", None)
+        # Las politicas no tienen por que estar donde los sensores.
+        legacy_database = getattr(self.store, "policy_database_name", None) or getattr(
+            self.store, "legacy_database_name", None
+        )
         if engine is None or not legacy_database:
             return {}
         pond_number = self._pond_number(pond_id)

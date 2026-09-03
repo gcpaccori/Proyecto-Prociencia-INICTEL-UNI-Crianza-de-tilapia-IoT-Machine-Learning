@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     cors_allow_origins: list[str] = Field(default_factory=lambda: ["*"])
     store_backend: str = "memory"
     legacy_database_name: str | None = None
+    # Las politicas de alarma son de Laravel y pueden vivir en otra base que
+    # las lecturas de sensores: en produccion coinciden, pero un entorno de
+    # pruebas lee los datos reales y conserva sus propias politicas. Si no se
+    # indica nada se usa la misma base antigua, que es el comportamiento previo.
+    policy_database_name: str | None = None
 
 
 @lru_cache
