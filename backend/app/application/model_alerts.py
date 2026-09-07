@@ -145,7 +145,7 @@ class ModelAlertDashboardService:
         cards = [
             self._ica_card(ica, policies.get(ICA_MODEL_CODE)),
             self._growth_card(growth, policies.get(GROWTH_MODEL_CODE)),
-            self._svm_card(svm, dashboard, policies.get(SVM_MODEL_CODE)),
+            self._svm_card(svm, dashboard, policies.get(SVM_MODEL_CODE), pond_id),
             self._light_card(light, policies.get(LIGHT_MODEL_CODE), self._racion_plan(pond_id), pond_id),
             self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
             self._condition_card(growth, policies.get(CONDITION_MODEL_CODE)),
@@ -401,7 +401,7 @@ class ModelAlertDashboardService:
             inputs=["Iluminancia", "Temperatura ambiente", "Humedad ambiente", "Hora del dia"],
             model=modelo,
             policy=policy,
-            eligible=False,
+            eligible=listo,
             unavailable_detail=(
                 "Necesita al menos ciento cincuenta ventanas completas de sensor para entrenarse."
             ),
@@ -410,12 +410,15 @@ class ModelAlertDashboardService:
             prediction_for=prevision.get("for_at") if prevision else None,
         )
         if listo:
-            card["maturity"] = "shadow"
-            card["status_detail"] = (
-                "Calcula y se puede contrastar, pero todavia no dispara alarmas: "
-                "se entreno con nueve dias de sensor y hace falta mas historial."
-            )
+            # La madurez la decide la politica, no el codigo. Antes se forzaba
+            # sombra aqui, asi que aprobar la politica no servia de nada.
             card["missing_inputs"] = []
+            if not card["can_emit"]:
+                card["maturity"] = "shadow"
+                card["status_detail"] = (
+                    "Calcula y se puede contrastar, pero no dispara alarmas: "
+                    "su politica no esta aprobada."
+                )
             card["traceability"] = {
                 **(card.get("traceability") or {}),
                 "light_forecast_ml": {
@@ -431,22 +434,68 @@ class ModelAlertDashboardService:
                 card["projection"] = {**(card.get("projection") or {}), "chart": grafico}
         else:
             card["maturity"] = "collecting_data"
-        card["can_emit"] = False
+            card["can_emit"] = False
         return card
+
+    def _water_rows(self, pond_id: str) -> list[dict[str, Any]]:
+        """Historial de agua sin recortar, que es lo que necesita el entrenamiento."""
+        engine = getattr(self.store, "engine", None)
+        legacy = getattr(self.store, "legacy_database_name", None)
+        pond_number = self._pond_number(pond_id)
+        if engine is None or not legacy or pond_number is None:
+            return []
+        safe = str(legacy).replace("`", "``")
+        try:
+            with engine.connect() as connection:
+                filas = connection.execute(
+                    text(
+                        f"""
+                        SELECT created_at, oxigeno_disuelto, temperatura, ph
+                        FROM `{safe}`.`parametro_aguas`
+                        WHERE piscina_id = :piscina_id AND oxigeno_disuelto IS NOT NULL
+                        ORDER BY created_at ASC
+                        """
+                    ),
+                    {"piscina_id": pond_number},
+                ).mappings().all()
+        except Exception:
+            return []
+        return [dict(f) for f in filas]
 
     def _svm_card(
         self,
         model: dict[str, Any],
         dashboard: dict[str, Any],
         policy: dict[str, Any] | None,
+        pond_id: str | None = None,
     ) -> dict[str, Any]:
+        from backend.app.models_engine.ml.od_forecast import (
+            predict_od,
+            train_od_forecast_model,
+        )
+
         forecast = dashboard.get("svm_od_forecast", {})
         if not isinstance(forecast, dict):
             forecast = {}
+
+        # Prevision propia, entrenada aqui: descarta las rachas de sensor
+        # atascado, mete el ciclo diel y el deficit de saturacion, y predice el
+        # cambio en vez del nivel. El artefacto viejo perdia contra no predecir.
+        filas_agua = self._water_rows(pond_id) if pond_id else []
+        entrenado = train_od_forecast_model(filas_agua) if filas_agua else None
+        propia = predict_od(entrenado, filas_agua) if entrenado else None
+
         active_asset = model.get("status") == "asset_activo" and bool(
             (dashboard.get("ai_model") or {}).get("productive")
         )
-        prediction = self._number(forecast.get("forecast_do_mg_l"))
+        if propia and entrenado and entrenado.get("beats_baselines"):
+            prediction = self._number(propia.get("predicted_mg_l"))
+            momento_objetivo = propia.get("for_at")
+            listo = True
+        else:
+            prediction = self._number(forecast.get("forecast_do_mg_l"))
+            momento_objetivo = forecast.get("target_time")
+            listo = active_asset and prediction is not None
         card = self._card(
             code=SVM_MODEL_CODE,
             alarm_code="MODEL_OD_THRESHOLD_FORECAST",
@@ -456,12 +505,19 @@ class ModelAlertDashboardService:
             inputs=["Temperatura", "pH", "Oxigeno disuelto", "Ion nitrato", "Historial temporal"],
             model=model,
             policy=policy,
-            eligible=active_asset and prediction is not None,
+            eligible=listo,
             unavailable_detail="El artefacto SVM permanece en evaluacion tecnica o no tiene una proyeccion valida.",
             eligible_detail="El artefacto activo puede notificar solo cuando la politica aprobada detecta un cruce futuro.",
             prediction_value=prediction,
-            prediction_for=forecast.get("target_time"),
+            prediction_for=momento_objetivo,
         )
+        if entrenado:
+            card["traceability"] = {
+                **(card.get("traceability") or {}),
+                "od_forecast_ml": {k: v for k, v in entrenado.items() if k != "modelo"},
+            }
+        if propia:
+            card["od_forecast"] = propia
         card["asset_id"] = forecast.get("asset_id") or card.get("asset_id")
         card["version"] = forecast.get("asset_version") or card.get("version")
         card["metrics"] = forecast.get("metrics") or card.get("metrics", {})
