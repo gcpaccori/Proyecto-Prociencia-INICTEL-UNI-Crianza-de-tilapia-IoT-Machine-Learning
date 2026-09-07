@@ -86,6 +86,10 @@ class IndoorProfile:
     first_light_hour: float | None
     last_light_hour: float | None
     hourly_mean_lux: dict[int, float] = field(default_factory=dict)
+    # La ventana se ancla en la ultima lectura que haya, no en la hora actual.
+    # Si el sensor lleva dias callado se reconstruye igual un dia entero, y sin
+    # esta fecha no habria forma de saber que el perfil no es de hoy.
+    measured_on: str | None = None
 
 
 @dataclass
@@ -200,6 +204,7 @@ def build_indoor_profile(
         first_light_hour=float(min(lit_hours)) if lit_hours else None,
         last_light_hour=float(max(lit_hours)) if lit_hours else None,
         hourly_mean_lux={hour: round(mean, 1) for hour, mean in hourly_mean.items()},
+        measured_on=newest.date().isoformat(),
     )
 
 

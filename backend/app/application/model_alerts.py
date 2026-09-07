@@ -668,6 +668,16 @@ class ModelAlertDashboardService:
                 "source": outdoor.source,
             },
             "outdoor_error": outdoor_error,
+            # El sol viene de la API y es de hoy; el perfil de dentro es del ultimo
+            # dia que el sensor hablo. Si no son el mismo dia, la transmitancia y el
+            # deficit cruzan fechas distintas y no deben leerse como actuales.
+            "dias_desalineados": (
+                bool(getattr(indoor, "measured_on", None))
+                and outdoor is not None
+                and getattr(outdoor, "date", None) is not None
+                and str(getattr(indoor, "measured_on")) != str(getattr(outdoor, "date"))
+            ),
+            "indoor_measured_on": getattr(indoor, "measured_on", None),
             "transmittance_pct": assessment.transmittance_pct,
             "deficit_hours": assessment.deficit_hours,
             "level": assessment.level,
@@ -1137,17 +1147,32 @@ class ModelAlertDashboardService:
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
         observaciones: list[tuple[str, float, str]] = []
+        todas: list[tuple[str, float, str]] = []
         for row in rows:
             moment, value = row.get("fecha_medicion"), row.get("iluminancia")
             if moment is None or value is None:
                 continue
             momento = _asumir_hora_local(moment) if isinstance(moment, datetime) else None
-            if momento is None or momento < cutoff:
+            if momento is None:
                 continue
             try:
-                observaciones.append((momento.isoformat(), float(value), "lux"))
+                lectura = (momento.isoformat(), float(value), "lux")
             except (TypeError, ValueError):
                 continue
+            todas.append(lectura)
+            if momento >= cutoff:
+                observaciones.append(lectura)
+
+        # Si el sensor lleva mas tiempo callado que la ventana, quedarse sin
+        # nada hacia que la tarjeta dijera "Sin valor" mientras el modelo, que
+        # entrena con todo el historial, seguia dando veredicto: un hueco al
+        # lado de una conclusion. Como ultimo recurso se ensena lo ultimo que
+        # llego a registrarse. Que es viejo ya lo dice la antiguedad del dato,
+        # que se calcula aparte y no se toca aqui.
+        if not observaciones and todas:
+            todas.sort(key=lambda fila: fila[0])
+            observaciones = todas[-60:]
+
         observaciones.sort(key=lambda fila: fila[0])
         return observaciones
 
