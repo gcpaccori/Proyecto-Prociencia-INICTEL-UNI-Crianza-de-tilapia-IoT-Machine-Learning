@@ -149,7 +149,6 @@ class ModelAlertDashboardService:
             self._light_card(light, policies.get(LIGHT_MODEL_CODE), self._racion_plan(pond_id), pond_id),
             self._photoperiod_card(photoperiod, policies.get(PHOTOPERIOD_MODEL_CODE)),
             self._condition_card(growth, policies.get(CONDITION_MODEL_CODE)),
-            self._light_forecast_card(pond_id, policies.get(LIGHT_FORECAST_MODEL_CODE)),
         ]
         events = self._eligible_events(cards, pond_id)
         observations = self._technical_observations(dashboard)
@@ -539,13 +538,21 @@ class ModelAlertDashboardService:
         """
         from backend.app.models_engine.ml.light_forecast import (
             predict_light_adequacy,
+            predict_next_light,
             train_light_adequacy_classifier,
+            train_light_forecast_model,
         )
 
         sensor_registered = bool(light.get("sensor_registered"))
         filas = self._light_rows(pond_id) if pond_id else []
         entrenado = train_light_adequacy_classifier(filas) if filas else None
         veredicto = predict_light_adequacy(entrenado, filas) if entrenado else None
+        # La regresion vivia en una tarjeta aparte que predecia lo mismo, del
+        # mismo dato y para el mismo instante: el clasificador no era mas que
+        # esta cifra comparada con 30 lux. Se fusionan. El si o el no manda la
+        # alarma, y la magnitud dice cuanto margen queda.
+        regresion = train_light_forecast_model(filas) if filas else None
+        cuanta = predict_next_light(regresion, filas) if regresion else None
         listo = bool(entrenado and veredicto and entrenado.get("beats_baselines"))
 
         card = self._card(
@@ -581,6 +588,31 @@ class ModelAlertDashboardService:
         )
         if listo:
             card["light_adequacy"] = veredicto
+            if cuanta:
+                # La magnitud se ensena con su error, que es grande frente al
+                # umbral: 104 lux con +-162 no dice si se cruzan los 30. Quien
+                # decide el si o el no es el clasificador, que para esa
+                # pregunta acierta mucho mejor. Sin el margen a la vista, las
+                # dos cifras parecen contradecirse.
+                card["light_adequacy"]["predicted_lux"] = cuanta.get("predicted_lux")
+                if regresion:
+                    metricas = regresion.get("metrics") or {}
+                    card["light_adequacy"]["predicted_lux_mae"] = metricas.get("test_mae_lux")
+                    card["light_adequacy"]["magnitud_orientativa"] = True
+                card["light_forecast"] = cuanta
+                grafico = self._light_forecast_chart(
+                    self._legacy_light_observations(pond_id, 72), cuanta
+                )
+                if grafico:
+                    card["chart"] = grafico
+                    card["projection"] = {**(card.get("projection") or {}), "chart": grafico}
+            if regresion:
+                magnitud = dict(regresion)
+                magnitud.pop("modelo", None)
+                card["traceability"] = {
+                    **(card.get("traceability") or {}),
+                    "light_magnitude_ml": magnitud,
+                }
             card["traceability"] = {
                 **(card.get("traceability") or {}),
                 "light_adequacy_ml": {k: v for k, v in entrenado.items() if k != "modelo"},
