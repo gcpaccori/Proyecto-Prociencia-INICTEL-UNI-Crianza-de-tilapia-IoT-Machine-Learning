@@ -583,7 +583,8 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         bio = con.execute(
             text(
                 f"""
-                SELECT fecha_inicial, fecha_muestreo, cantidad_peces_iniciales, cantidad_peces_actuales, bi_kg,
+                SELECT fecha_inicial, fecha_muestreo, cantidad_muestreo, cantidad_peces_iniciales, cantidad_peces_actuales,
+                       bi_kg, bf_kg, prom_longitud_cm, prom_peso_g, tasa_crecimiento_g_dia AS tasa_guardada,
                        total_alimento_consumido_kg AS alimento, tasa_supervivencia_porcentaje AS supervivencia,
                        conversion_alimenticia AS conversion, observaciones AS observacion
                 FROM `{safe}`.`biometrias`
@@ -622,6 +623,18 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
     fechas = sorted(medias)
     inicio, fin = fechas[0], fechas[-1]
     info = {b["fecha_muestreo"]: b for b in bio}
+
+    # Relacion peso-talla de los peces medidos (W = a·L^b, L en mm). Es la
+    # forma de la ecuacion 2 del Informe 17, con el coeficiente de este
+    # estanque. Sirve para pasar de peso a talla y de talla a peso.
+    lw = np.asarray([(float(p["l_cm"]) * 10.0, float(p["peso"])) for p in peces if p["l_cm"] and p["peso"]])
+    b_alo, ln_a = np.polyfit(np.log(lw[:, 0]), np.log(lw[:, 1]), 1)
+    a_alo = math.exp(ln_a)
+    talla_de_peso = lambda w: (w / a_alo) ** (1.0 / b_alo)
+    peso_de_talla = lambda l: a_alo * l ** b_alo
+    tallas = {f: float(np.mean(v)) for f, v in largos.items()}
+    if inicio not in tallas:
+        tallas[inicio] = talla_de_peso(medias[inicio])
 
     diaria = _temperatura_diaria(filas_crudas)
     dias_con_dato = sorted(diaria)
@@ -669,6 +682,13 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
     # biometrias en el camino.
     trayectoria = {v: simular(medias[inicio], inicio, fin, v) for v in variantes}
 
+    soderberg_talla = {inicio: tallas[inicio]}
+    largo, dia = tallas[inicio], inicio
+    while dia < fin:
+        largo += max(0.0, _soderberg(temp_del_dia(dia)))
+        dia += timedelta(days=1)
+        soderberg_talla[dia] = largo
+
     # Cada tramo, arrancando del peso medido al inicio del tramo.
     tramos = []
     for fa, fz in zip(fechas, fechas[1:]):
@@ -690,6 +710,9 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
                 "dias": len(dias),
                 "peso_inicial_g": round(medias[fa], 2),
                 "peso_final_g": round(medias[fz], 2),
+                "talla_inicial_mm": round(tallas[fa], 1),
+                "talla_final_mm": round(tallas[fz], 1),
+                "observado_mm_dia": round((tallas[fz] - tallas[fa]) / len(dias), 3),
                 "inicio_es_siembra": fa not in pesos,
                 "temperatura_media": round(float(np.mean(temps)), 2),
                 "tau_medio": round(float(np.mean([factor_temperatura(t) for t in temps])), 2),
@@ -711,31 +734,57 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
 
     obs_t = [t["observado_g_dia"] for t in tramos]
 
-    def resumen_variante(clave: str, campo: str) -> dict[str, float]:
+    fechas_peces = [f for f in fechas if f in pesos]
+    fechas_tallas = [f for f in fechas if f in largos]
+    obs_peso = [x for f in fechas_peces for x in pesos[f]]
+    obs_talla = [x for f in fechas_tallas for x in largos[f]]
+
+    def maximo_posible(grupos: dict, fechas_usadas: list) -> float:
+        """R2 que lograria un modelo que acertara exacto el promedio de cada fecha."""
+        todos = [x for f in fechas_usadas for x in grupos[f]]
+        dentro = sum((x - np.mean(grupos[f])) ** 2 for f in fechas_usadas for x in grupos[f])
+        total = float(np.sum((np.asarray(todos) - np.mean(todos)) ** 2))
+        return 1.0 - dentro / total if total else 0.0
+
+    def resumen_yi(clave: str, campo: str) -> dict[str, Any]:
         pred_t = [t[campo] for t in tramos]
-        fechas_peces = [f for f in fechas if f in pesos]
-        obs_p = [x for f in fechas_peces for x in pesos[f]]
-        pred_p = [trayectoria[clave][f] for f in fechas_peces for _ in pesos[f]]
         return {
+            "r2_peces": round(_r2(obs_peso, [trayectoria[clave][f] for f in fechas_peces for _ in pesos[f]]), 3),
+            "r2_talla": round(_r2(obs_talla, [talla_de_peso(trayectoria[clave][f]) for f in fechas_tallas for _ in largos[f]]), 3),
             "r2": round(_r2(obs_t, pred_t), 3),
             "mae": round(_mae(obs_t, pred_t), 3),
-            "r2_peces": round(_r2(obs_p, pred_p), 3),
+            "unidad_tramo": "g/día",
         }
 
-    modelo = resumen_variante("modelo", "predicho_g_dia")
+    modelo = resumen_yi("modelo", "predicho_g_dia")
+    obs_mm = [t["observado_mm_dia"] for t in tramos]
+    pred_mm = [(soderberg_talla[date.fromisoformat(t["hasta"])] - soderberg_talla[date.fromisoformat(t["desde"])]) / t["dias"] for t in tramos]
+    for t, v in zip(tramos, pred_mm):
+        t["soderberg_mm_dia"] = round(v, 3)
     comparacion = [
-        {"metodo": "Yi con OD crítico 5 y mínimo 3 mg/L, del Informe 16 (el modelo)", **modelo},
-        {"metodo": "Yi con sus propios umbrales de OD, 3,0 y 0,3 mg/L", **resumen_variante("od_yi", "predicho_od_yi_g_dia")},
-        {"metodo": "Yi sin factor de oxígeno (δ = 1)", **resumen_variante("sin_od", "predicho_sin_od_g_dia")},
+        {"metodo": "Yi con OD crítico 5 y mínimo 3 mg/L, del Informe 16 (el modelo)", "mide": "peso", **modelo},
+        {"metodo": "Yi con sus propios umbrales de OD, 3,0 y 0,3 mg/L", "mide": "peso", **resumen_yi("od_yi", "predicho_od_yi_g_dia")},
+        {"metodo": "Yi sin factor de oxígeno (δ = 1)", "mide": "peso", **resumen_yi("sin_od", "predicho_sin_od_g_dia")},
+        {
+            "metodo": "Söderberg por temperatura (Informe 17)",
+            "mide": "talla",
+            "r2_peces": round(_r2(obs_peso, [peso_de_talla(soderberg_talla[f]) for f in fechas_peces for _ in pesos[f]]), 3),
+            "r2_talla": round(_r2(obs_talla, [soderberg_talla[f] for f in fechas_tallas for _ in largos[f]]), 3),
+            "r2": round(_r2(obs_mm, pred_mm), 3),
+            "mae": round(_mae(obs_mm, pred_mm), 3),
+            "unidad_tramo": "mm/día",
+        },
+        {
+            "metodo": "Máximo posible: acertar exacto el promedio de cada biometría",
+            "mide": "referencia",
+            "r2_peces": round(maximo_posible(pesos, fechas_peces), 3),
+            "r2_talla": round(maximo_posible(largos, fechas_tallas), 3),
+            "r2": None,
+            "mae": None,
+            "unidad_tramo": None,
+        },
     ]
-    # Referencia en longitud: la recta de Soderberg sola, sobre los mismos tramos.
-    fl = [f for f in fechas if f in largos]
-    if len(fl) >= 3:
-        obs_l = [(np.mean(largos[z]) - np.mean(largos[a])) / (z - a).days for a, z in zip(fl, fl[1:])]
-        pred_l = [float(np.mean([max(0.0, _soderberg(temp_del_dia(a + timedelta(days=k)))) for k in range((z - a).days)])) for a, z in zip(fl, fl[1:])]
-        comparacion.append({"metodo": "Söderberg por temperatura (Informe 17), en longitud", "r2": round(_r2(obs_l, pred_l), 3), "mae": None, "r2_peces": None, "unidad": "mm/día"})
 
-    fechas_peces = [f for f in fechas if f in pesos]
     pares = [[round(x, 2), round(trayectoria["modelo"][f], 2), f.isoformat()] for f in fechas_peces for x in pesos[f]]
     obs_p = [p[0] for p in pares]
     pred_p = [p[1] for p in pares]
@@ -763,6 +812,49 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
             "serie": [[d.isoformat(), round(w, 2)] for d, w in sorted(recorrido.items())],
         }
 
+    registro = []
+    for b in bio:
+        f = b["fecha_muestreo"]
+        if f not in pesos:
+            continue
+        w = np.asarray(pesos[f])
+        l_cm = np.asarray(largos.get(f, []), float) / 10.0
+        k = 100.0 * w / l_cm ** 3 if len(l_cm) == len(w) and len(w) else np.asarray([])
+        dias = (f - b["fecha_inicial"]).days if b["fecha_inicial"] else None
+        anterior = medias.get(b["fecha_inicial"])
+        registro.append(
+            {
+                "fecha": f.isoformat(),
+                "peces_medidos": int(len(w)),
+                "peces_registrados": int(b["cantidad_muestreo"]) if b["cantidad_muestreo"] is not None else None,
+                "talla_media_mm": round(float(np.mean(largos[f])), 1) if f in largos else None,
+                "talla_de_mm": round(float(np.std(largos[f], ddof=1)), 1) if f in largos and len(largos[f]) > 1 else None,
+                "peso_medio_g": round(float(w.mean()), 2),
+                "peso_de_g": round(float(w.std(ddof=1)), 2) if len(w) > 1 else None,
+                "promedio_guardado_ok": b["prom_peso_g"] is not None and abs(float(b["prom_peso_g"]) - float(w.mean())) < 0.05,
+                "factor_condicion": round(float(k.mean()), 2) if len(k) else None,
+                "biomasa_kg": float(b["bf_kg"]) if b["bf_kg"] is not None else None,
+                "peces_en_estanque": float(b["cantidad_peces_actuales"]) if b["cantidad_peces_actuales"] is not None else None,
+                "supervivencia_pct": float(b["supervivencia"]) if b["supervivencia"] is not None else None,
+                "alimento_kg": float(b["alimento"]) if b["alimento"] is not None else None,
+                "conversion_alimenticia": float(b["conversion"]) if b["conversion"] is not None else None,
+                "tasa_guardada_g_dia": float(b["tasa_guardada"]) if b["tasa_guardada"] is not None else None,
+                "tasa_por_pez_g_dia": round((float(w.mean()) - anterior) / dias, 3) if anterior is not None and dias else None,
+            }
+        )
+    rango_l = np.arange(math.floor(lw[:, 0].min() / 10) * 10 - 10, math.ceil(lw[:, 0].max() / 10) * 10 + 11, 2.0)
+    alometria = {
+        "a": float(f"{a_alo:.4e}"),
+        "b": round(float(b_alo), 3),
+        "r2": round(_r2(lw[:, 1], a_alo * lw[:, 0] ** b_alo), 3),
+        "n": int(len(lw)),
+        "a_con_b3": float(f"{float(np.sum(lw[:, 1] * lw[:, 0] ** 3) / np.sum(lw[:, 0] ** 6)):.4e}"),
+        "puntos": [[round(float(l), 1), round(float(w), 2), f.isoformat()] for f in fechas_peces for l, w in zip(largos.get(f, []), pesos[f])],
+        "curva": [[round(float(l), 1), round(peso_de_talla(float(l)), 2)] for l in rango_l],
+        "curva_informe17": [[round(float(l), 1), round(1.861e-5 * float(l) ** 3, 2)] for l in rango_l],
+        "talla_siembra_mm": round(tallas[inicio], 1) if inicio not in largos else None,
+    }
+
     # Condicion de hoy: los factores del modelo con la temperatura y el oxigeno
     # de hoy, para un pez del peso de la ultima biometria. No se estima el peso
     # actual del lote: desde esa biometria no hay pesos que lo comprueben.
@@ -789,7 +881,23 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         "intervalos": tramos,
         "ventana_con_oxigeno": ventana,
         "peces": [[f.isoformat(), round(x, 2)] for f in fechas_peces for x in pesos[f]],
-        "medias": [{"fecha": f.isoformat(), "peso_g": round(medias[f], 2), "medido": f in pesos, "previsto_g": round(trayectoria["modelo"][f], 2)} for f in fechas],
+        "peces_talla": [[f.isoformat(), round(x, 1)] for f in fechas_tallas for x in largos[f]],
+        "medias": [
+            {
+                "fecha": f.isoformat(),
+                "peso_g": round(medias[f], 2),
+                "talla_mm": round(tallas[f], 1),
+                "medido": f in pesos,
+                "previsto_g": round(trayectoria["modelo"][f], 2),
+                "previsto_talla_mm": round(talla_de_peso(trayectoria["modelo"][f]), 1),
+                "soderberg_mm": round(soderberg_talla[f], 1),
+            }
+            for f in fechas
+        ],
+        "serie_talla_modelo": [[d.isoformat(), round(talla_de_peso(w), 1)] for d, w in sorted(trayectoria["modelo"].items())],
+        "serie_talla_soderberg": [[d.isoformat(), round(l, 1)] for d, l in sorted(soderberg_talla.items())],
+        "biometrias": registro,
+        "alometria": alometria,
         "serie_peso_modelo": [[d.isoformat(), round(w, 2)] for d, w in sorted(trayectoria["modelo"].items())],
         "serie_peso_sin_od": [[d.isoformat(), round(w, 2)] for d, w in sorted(trayectoria["sin_od"].items())],
         "curva_tau": [[t, round(factor_temperatura(t), 3)] for t in np.arange(20, 42.01, 0.5).round(1).tolist()],
@@ -824,9 +932,14 @@ def _lectura_crecimiento(tramos: list, modelo: dict, comparacion: list, ventana:
             f"Desde el {_fecha_texto(ventana['desde'])}, cuando empiezan las lecturas válidas de oxígeno, el modelo parte del "
             f"peso medido ({_coma(ventana['peso_inicial_g'], 1)} g) y sin ajustar ningún parámetro {detalle}. "
         )
+    maximo = next((c for c in comparacion if c.get("mide") == "referencia"), None)
+    soderberg = next((c for c in comparacion if c.get("mide") == "talla"), None)
     texto += (
-        f"Sobre toda la campaña, desde la siembra, explica el {_coma(modelo['r2_peces'] * 100, 0)} % del peso de los peces "
-        f"medidos. El oxígeno es lo que hace funcionar el modelo: sin su factor el R² del peso cae a {_coma(sin_od['r2_peces'])} "
+        f"Sobre toda la campaña, desde la siembra, explica el {_coma(modelo['r2_peces'] * 100, 0)} % del peso de los peces medidos"
+        + (f" (con peces de distinto tamaño en cada fecha, lo máximo posible es {_coma(maximo['r2_peces'] * 100, 0)} %)" if maximo else "")
+        + f" y, pasado a talla con la relación peso–talla del estanque, el {_coma(modelo['r2_talla'] * 100, 0)} % de la talla"
+        + (f"; la recta de Söderberg, que calcula talla directamente, llega a {_coma(soderberg['r2_talla'])}" if soderberg else "")
+        + f". El oxígeno es lo que hace funcionar el modelo: sin su factor el R² del peso cae a {_coma(sin_od['r2_peces'])} "
         f"y con los umbrales del propio Yi (3,0 y 0,3 mg/L) a {_coma(od_yi['r2_peces'])}. Con los del Informe 16 el "
         "crecimiento se frena bajo 5 mg/L y se detiene bajo 3."
     )
