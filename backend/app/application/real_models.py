@@ -576,7 +576,7 @@ class RealModelsService:
             **result,
             "issued_at": latest["timestamp"].isoformat(),
             "traceability": {
-                "formula": "DO_sat(T)=14.589-0.4T+0.008T^2-0.0000661T^3",
+                "formula": "OD_sat(T) = Benson-Krause (1984)",
                 "measured_inputs_only": True,
                 "forecast_asset_id": forecast.get("asset_id"),
             },
@@ -1101,8 +1101,8 @@ class RealModelsService:
                     "chart": self._oxygen_temperature_chart(temperatures, latest_od),
                 },
                 "formula": {
-                    "expression": "OD_sat(T) = 14.589 - 0.4T + 0.008T^2 - 0.0000661T^3",
-                    "latex": r"OD_{sat}(T)=14.589-0.4T+0.008T^2-0.0000661T^3",
+                    "expression": "Saturacion (%) = 100 x OD medido / OD_sat(T), con OD_sat de Benson-Krause",
+                    "latex": r"\ln OD_{sat} = -139.34411 + \frac{1.575701\cdot10^{5}}{T_K} - \frac{6.642308\cdot10^{7}}{T_K^2} + \frac{1.2438\cdot10^{10}}{T_K^3} - \frac{8.621949\cdot10^{11}}{T_K^4}",
                     "detail": "Saturacion (%) = 100 x OD medido / OD_sat(T); deficit = OD_sat(T) - OD medido.",
                     "conditions": [
                         "Usa exclusivamente temperatura y OD medidos en MySQL local.",

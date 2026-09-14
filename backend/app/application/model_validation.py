@@ -191,6 +191,13 @@ def _proyeccion_oxigeno(filas_crudas) -> dict[str, Any]:
 
     recta = _recta(obs, pred_gb)
     pares = [[round(float(o), 3), round(float(p), 3)] for o, p in zip(obs, pred_gb)]
+
+    # Prevision para dentro de una hora con el mismo modelo que se valida, de
+    # modo que la lectura actual y la validacion hablen del mismo modelo.
+    try:
+        prevision = M.predict_od({"modelo": gb}, filas)
+    except Exception:
+        prevision = None
     return {
         "disponible": True,
         "tipo": "Gradient boosting (regresion por arboles de decision potenciados)",
@@ -208,6 +215,7 @@ def _proyeccion_oxigeno(filas_crudas) -> dict[str, Any]:
             "Persistencia (suponer que no cambia)": resumen(act),
         },
         "reparto": f"{corte_train} ventanas de entrenamiento y {len(Xte)} de prueba, en orden temporal",
+        "prevision_actual": prevision,
         "lectura": (
             "La SVR que usaba este modulo queda por debajo de simplemente suponer que el oxigeno "
             "no cambia. El modelo que si aporta es gradient boosting, entrenado sobre el cambio "
@@ -296,6 +304,16 @@ def _crecimiento(engine, legacy: str, limpias) -> dict[str, Any]:
         )
 
     linea = [[t, round(-1.6707 + 0.09682 * t, 3)] for t in range(10, 41)]
+
+    # Evolucion en el tiempo con una sola formula: la temperatura media de cada
+    # dia llevada a la recta de Soderberg, sin factores limitantes.
+    por_dia: dict[str, list[float]] = {}
+    for f in limpias:
+        por_dia.setdefault(f["cuando"].date().isoformat(), []).append(f["t"])
+    serie_diaria = []
+    for dia in sorted(por_dia)[-120:]:
+        tmedia = float(np.mean(por_dia[dia]))
+        serie_diaria.append([dia, round(tmedia, 2), round(-1.6707 + 0.09682 * tmedia, 3)])
     r2 = None
     if len(intervalos) >= 2:
         r2 = round(
@@ -311,6 +329,7 @@ def _crecimiento(engine, legacy: str, limpias) -> dict[str, Any]:
         "eje_x": "Temperatura media del agua en el intervalo (C)",
         "eje_y": "Crecimiento diario en longitud (mm/dia)",
         "linea_modelo": linea,
+        "serie_diaria": serie_diaria,
         "puntos": [[i["temperatura_media"], i["observado_mm_dia"]] for i in intervalos],
         "intervalos": intervalos,
         "r2": r2,
@@ -350,6 +369,7 @@ def _calidad_agua(engine, limpias) -> dict[str, Any]:
 
     svm = None
     acierto = None
+    orden = []
     try:
         with engine.connect() as con:
             fila = con.execute(
@@ -368,6 +388,21 @@ def _calidad_agua(engine, limpias) -> dict[str, Any]:
             acierto = round(float(np.mean(np.asarray(nombres) == np.asarray(clase))), 4)
     except Exception:
         svm = None
+
+    # Lo que el SVM dice en el tiempo, que es la salida real de este modelo.
+    serie_svm = []
+    if svm is not None:
+        try:
+            orden_c = orden if orden else []
+            recientes = limpias[-2000:]
+            paso = max(1, len(recientes) // 400)
+            muestra = recientes[::paso]
+            Xm = np.asarray([[f["t"], f["ph"], f["od"], f["no3"]] for f in muestra], float)
+            for f, p in zip(muestra, svm.predict(Xm)):
+                nombre = orden_c[int(p)] if (not isinstance(p, str) and orden_c) else str(p)
+                serie_svm.append([f["cuando"].isoformat(), nombre])
+        except Exception:
+            serie_svm = []
 
     dependencias = []
     nombres_var = [("Temperatura (C)", 0), ("pH", 1), ("Oxigeno disuelto (mg/L)", 2), ("Ion nitrato (mg/L)", 3)]
@@ -402,6 +437,8 @@ def _calidad_agua(engine, limpias) -> dict[str, Any]:
         "lecturas": n,
         "acierto_svm": acierto,
         "clases": sorted(set(clase)),
+        "orden_clases": ["Excelente", "Buena", "Regular", "Mala", "Muy mala"],
+        "serie_svm": serie_svm,
         "dependencias": dependencias,
         "regresion_multiple": regresion,
         "origen_etiqueta": (

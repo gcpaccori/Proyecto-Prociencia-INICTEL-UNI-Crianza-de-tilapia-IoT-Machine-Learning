@@ -19,8 +19,22 @@ def _non_negative(name: str, value: float) -> float:
 
 
 def do_saturation(temp_c: float) -> float:
-    temp = float(temp_c)
-    return 14.589 - 0.4 * temp + 0.008 * temp**2 - 0.0000661 * temp**3
+    """Oxigeno disuelto en saturacion para agua dulce a presion normal (mg/L).
+
+    Ecuacion de Benson y Krause (1984), la referencia estandar de APHA para la
+    solubilidad del oxigeno. Sustituye al polinomio cubico que se usaba antes,
+    que no procedia de ninguno de los informes y se desviaba en torno a un 5%
+    a las temperaturas de este estanque.
+    """
+    kelvin = float(temp_c) + 273.15
+    ln_sat = (
+        -139.34411
+        + 1.575701e5 / kelvin
+        - 6.642308e7 / kelvin**2
+        + 1.243800e10 / kelvin**3
+        - 8.621949e11 / kelvin**4
+    )
+    return math.exp(ln_sat)
 
 
 def oxygen_status(
