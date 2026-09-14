@@ -312,31 +312,186 @@ def _proyeccion_oxigeno(filas_crudas) -> dict[str, Any]:
     }
 
 
-# ----------------------------------------------------------------------
-# 2) Estado de oxigeno disuelto
-# ----------------------------------------------------------------------
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "setiembre", "octubre", "noviembre", "diciembre"]
 MIN_LECTURAS_MES = 50
+HORAS_PREVIAS_MIN = 18
+
+# Factor de oxigeno del modelo de crecimiento de Yi (1998), ecuaciones 16 y 17
+# del Informe 16. Valores para tilapia del Nilo usados por Khater et al. (2021).
+OD_CRITICO = 3.0
+OD_MINIMO = 0.3
+
+
+def _hora_texto(h: float) -> str:
+    minutos = int(round(h * 4)) * 15 % 1440
+    return f"{minutos // 60:02d}:{minutos % 60:02d}"
+
+
+def _fecha_texto(iso: str) -> str:
+    d = date.fromisoformat(iso[:10])
+    return f"{d.day} de {MESES[d.month - 1]}"
+
+
+def _mae(obs, pred) -> float:
+    return float(np.mean(np.abs(np.asarray(obs, float) - np.asarray(pred, float))))
+
+
+# ----------------------------------------------------------------------
+# 2) Estado de oxigeno disuelto: saturacion y ciclo diario
+# ----------------------------------------------------------------------
+def _horarias(limpias) -> list[dict[str, Any]]:
+    grupos: dict = {}
+    for f in limpias:
+        grupos.setdefault(f["cuando"].replace(minute=0, second=0, microsecond=0), []).append(f)
+    return [
+        {"hora": h, "od": float(np.mean([f["od"] for f in v])), "t": float(np.mean([f["t"] for f in v]))}
+        for h, v in sorted(grupos.items())
+        if len(v) >= 2
+    ]
+
+
+def _con_nivel(horas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cada hora con el nivel de oxigeno de las 24 horas anteriores.
+
+    El nivel sale solo del pasado: es lo que el estanque viene teniendo, y el
+    ciclo diario dice cuanto se aparta de ese nivel a cada hora del dia.
+    """
+    indice = {x["hora"]: x for x in horas}
+    salida = []
+    for x in horas:
+        previas = [indice[x["hora"] - timedelta(hours=k)] for k in range(1, 25) if x["hora"] - timedelta(hours=k) in indice]
+        if len(previas) < HORAS_PREVIAS_MIN:
+            continue
+        w = 2 * math.pi * (x["hora"].hour + 0.5) / 24
+        nivel = float(np.mean([p["od"] for p in previas]))
+        salida.append({**x, "nivel": nivel, "sen": math.sin(w), "cos": math.cos(w), "deficit": od_saturacion(x["t"]) - nivel})
+    return salida
+
+
+def _ajuste(filas, columnas, desde=0, hasta=None):
+    sel = filas[desde:hasta]
+    A = np.column_stack([np.ones(len(sel))] + [[f[c] for f in sel] for c in columnas])
+    y = np.asarray([f["od"] - f["nivel"] for f in sel])
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    return coef
+
+
+def _predice(filas, columnas, coef):
+    A = np.column_stack([np.ones(len(filas))] + [[f[c] for f in filas] for c in columnas])
+    return np.asarray([f["nivel"] for f in filas]) + A @ coef
 
 
 def _estado_oxigeno(limpias) -> dict[str, Any]:
-    if len(limpias) < 50:
-        return {"disponible": False, "motivo": "No hay lecturas limpias suficientes."}
+    horas = _con_nivel(_horarias(limpias))
+    if len(horas) < 24 * 14:
+        return {"disponible": False, "motivo": "Hacen falta al menos dos semanas de horas con lecturas limpias."}
+
+    ciclo = ["sen", "cos"]
+    corte = int(len(horas) * 0.70)
+    prueba = horas[corte:]
+    obs = np.asarray([f["od"] for f in prueba])
+
+    comparacion = []
+    predicciones = {}
+    for nombre, columnas in (
+        ("Nivel de las 24 h previas + ciclo diario (el modelo)", ciclo),
+        ("Solo el nivel de las 24 h previas, sin ciclo", []),
+        ("Nivel + ciclo + déficit de saturación (intercambio con el aire)", ciclo + ["deficit"]),
+    ):
+        coef = _ajuste(horas, columnas, 0, corte)
+        pred = _predice(prueba, columnas, coef)
+        predicciones[nombre] = pred
+        comparacion.append({"metodo": nombre, "r2": round(_r2(obs, pred), 3), "mae": round(_mae(obs, pred), 3)})
+    pred_modelo = predicciones[comparacion[0]["metodo"]]
+
+    # Modelo final con todo el historico, para la curva del ciclo y la proyeccion.
+    a, b_sen, b_cos = _ajuste(horas, ciclo)
+    amplitud = math.hypot(b_sen, b_cos)
+    hora_max = (math.degrees(math.atan2(b_sen, b_cos)) % 360) / 15
+    hora_min = (hora_max + 12) % 24
+    onda = lambda h: a + b_sen * math.sin(2 * math.pi * h / 24) + b_cos * math.cos(2 * math.pi * h / 24)
+
+    anomalias = [[round(f["hora"].hour + 0.5, 2), round(f["od"] - f["nivel"], 3)] for f in horas]
+    por_hora = []
+    for h in range(24):
+        v = [f["od"] - f["nivel"] for f in horas if f["hora"].hour == h]
+        if v:
+            por_hora.append([h + 0.5, round(float(np.mean(v)), 3), len(v)])
+    todas = np.asarray([f["od"] - f["nivel"] for f in horas])
+    ajuste_ciclo = np.asarray([onda(f["hora"].hour + 0.5) for f in horas])
+
+    # Ultimos 7 dias: lo medido y lo que el modelo esperaba para cada hora.
+    ultima = horas[-1]["hora"]
+    recientes = [f for f in horas if f["hora"] > ultima - timedelta(days=7)]
+    serie = [[f["hora"].isoformat(), round(f["od"], 3), round(f["nivel"] + onda(f["hora"].hour + 0.5), 3)] for f in recientes]
+
+    # Proximas 24 h desde la ultima hora medida.
+    ultimas24 = [f["od"] for f in _horarias(limpias) if f["hora"] > ultima - timedelta(hours=24)]
+    nivel_actual = float(np.mean(ultimas24)) if ultimas24 else horas[-1]["nivel"]
+    proyeccion = []
+    for k in range(1, 25):
+        hk = ultima + timedelta(hours=k)
+        proyeccion.append([hk.isoformat(), round(nivel_actual + onda(hk.hour + 0.5), 3)])
+    minimo = min(proyeccion, key=lambda p: p[1])
+    maximo = max(proyeccion, key=lambda p: p[1])
+
+    return {
+        "disponible": True,
+        "tipo": "Regresión armónica del ciclo diario, con saturación de Benson-Krause",
+        "que_se_compara": "Oxígeno que el modelo esperaba a cada hora frente al que se midió, en semanas que el ajuste no vio",
+        "formula": "OD(h) = nivel de las 24 h previas + a + b·sen(2πh/24) + c·cos(2πh/24)",
+        "coeficientes": {"a": round(float(a), 4), "b": round(float(b_sen), 4), "c": round(float(b_cos), 4)},
+        "eje_x": "Oxígeno medido (mg/L)",
+        "eje_y": "Oxígeno esperado por el modelo (mg/L)",
+        "puntos": _muestrear([[round(float(o), 3), round(float(p), 3)] for o, p in zip(obs, pred_modelo)]),
+        "puntos_totales": len(prueba),
+        "recta": _recta(obs, pred_modelo),
+        "r2": round(_r2(obs, pred_modelo), 3),
+        "mae": round(_mae(obs, pred_modelo), 3),
+        "comparacion": comparacion,
+        "reparto": f"{_miles(corte)} horas de ajuste y {_miles(len(prueba))} de prueba, en orden temporal",
+        "ciclo": {
+            "puntos": _muestrear(anomalias, 700),
+            "por_hora": por_hora,
+            "curva": [[round(h, 2), round(onda(h), 3)] for h in np.arange(0, 24.01, 0.25).tolist()],
+            "r2": round(_r2(todas, ajuste_ciclo), 3),
+            "amplitud_mg_l": round(amplitud, 2),
+            "hora_maximo": _hora_texto(hora_max),
+            "hora_minimo": _hora_texto(hora_min),
+        },
+        "serie": serie,
+        "proyeccion": proyeccion,
+        "nivel_actual_mg_l": round(nivel_actual, 2),
+        "minimo_esperado": {"cuando": minimo[0], "od_mg_l": minimo[1]},
+        "maximo_esperado": {"cuando": maximo[0], "od_mg_l": maximo[1]},
+        "temperatura": _oxigeno_y_temperatura(limpias),
+        "lectura": _lectura_estado(comparacion, amplitud, hora_max, hora_min),
+    }
+
+
+def _lectura_estado(comparacion, amplitud, hora_max, hora_min) -> str:
+    modelo, sin_ciclo, con_deficit = comparacion
+    texto = (
+        f"En semanas que el ajuste no vio, el modelo explica el {_coma(modelo['r2'] * 100, 0)} % de la variación del "
+        f"oxígeno hora a hora, con un error medio de {_coma(modelo['mae'])} mg/L. Sin el ciclo diario, usando solo "
+        f"el nivel de las 24 h previas, se explica el {_coma(sin_ciclo['r2'] * 100, 0)} %: el ciclo aporta la diferencia. "
+        f"El oxígeno de este estanque sube hasta las {_hora_texto(hora_max)} y baja hasta las {_hora_texto(hora_min)}, "
+        f"{_coma(amplitud)} mg/L por encima y por debajo de su nivel."
+    )
+    if con_deficit["r2"] <= modelo["r2"] + 0.01:
+        texto += (
+            " Agregar el déficit de saturación, que es el intercambio con el aire del balance de masas, no mejora el "
+            f"ajuste (R² {_coma(con_deficit['r2'])}): en este estanque el intercambio con el aire no explica los cambios hora a hora."
+        )
+    return texto
+
+
+def _oxigeno_y_temperatura(limpias) -> dict[str, Any]:
+    """Oxigeno frente a temperatura, por mes: por que la temperatura no entra."""
     temps = [f["t"] for f in limpias]
     ods = [f["od"] for f in limpias]
-    sats = np.asarray([od_saturacion(t) for t in temps])
-    porcentaje = 100 * np.asarray(ods) / sats
-    od_arr = np.asarray(ods)
-
-    lo = math.floor(min(temps))
-    hi = math.ceil(max(temps))
-    curva = [[t, round(od_saturacion(t), 3)] for t in np.arange(lo, hi + 0.25, 0.25).round(2).tolist()]
-    bajo = round(100.0 * float(np.mean(od_arr < 3.0)), 1)
-    alto = round(100.0 * float(np.mean(od_arr >= 5.0)), 1)
-
-    # Cada lectura lleva su mes: la nube se colorea por mes para ver si los
-    # grupos de oxigeno son temperaturas distintas o epocas distintas.
-    grupos: dict[str, list[tuple[float, float]]] = {}
+    lo, hi = math.floor(min(temps)), math.ceil(max(temps))
+    grupos: dict[str, list] = {}
     for f in limpias:
         grupos.setdefault(f["cuando"].strftime("%Y-%m"), []).append((f["t"], f["od"]))
     por_mes = []
@@ -355,59 +510,31 @@ def _estado_oxigeno(limpias) -> dict[str, Any]:
                 "pct_bajo_3": round(100.0 * float(np.mean(arr[:, 1] < 3.0)), 1),
             }
         )
-    meses_validos = {m["mes"] for m in por_mes}
-    pares = [
-        [round(f["t"], 2), round(f["od"], 3), f["cuando"].strftime("%Y-%m")]
-        for f in limpias
-        if f["cuando"].strftime("%Y-%m") in meses_validos
-    ]
-    recta = _recta(temps, ods)
+    validos = {m["mes"] for m in por_mes}
+    pares = [[round(f["t"], 2), round(f["od"], 3), f["cuando"].strftime("%Y-%m")] for f in limpias if f["cuando"].strftime("%Y-%m") in validos]
+    sats = np.asarray([od_saturacion(t) for t in temps])
+    porcentaje = 100 * np.asarray(ods) / sats
     return {
-        "disponible": True,
-        "tipo": "Ecuación física de solubilidad (Benson-Krause)",
-        "que_se_compara": "Oxígeno medido frente a la temperatura del agua, con la saturación teórica encima",
         "eje_x": "Temperatura del agua (°C)",
         "eje_y": "Oxígeno disuelto (mg/L)",
         "puntos": _muestrear(pares),
-        "puntos_totales": len(limpias),
+        "curva_saturacion": [[t, round(od_saturacion(t), 3)] for t in np.arange(lo, hi + 0.25, 0.25).round(2).tolist()],
+        "recta": _recta(temps, ods),
         "por_mes": por_mes,
-        "curva_saturacion": curva,
-        "recta": recta,
-        "r2": recta["r2"],
-        "saturacion_media_pct": round(float(np.mean(porcentaje)), 1),
         "saturacion_mediana_pct": round(float(np.median(porcentaje)), 1),
-        "pct_bajo_3": bajo,
-        "pct_sobre_5": alto,
-        "lectura": _lectura_estado(por_mes, recta["r2"], float(np.median(porcentaje))),
     }
 
 
-def _lectura_estado(por_mes: list, r2: float, saturacion_mediana: float) -> str:
-    texto = (
-        "La ecuación dice cuánto oxígeno puede admitir el agua a cada temperatura, no cuánto tiene. "
-        f"La nube queda muy por debajo de la curva: la saturación mediana es {_coma(saturacion_mediana, 0)} %."
-    )
-    if len(por_mes) >= 2:
-        peor = max(por_mes, key=lambda m: m["pct_bajo_3"])
-        mejor = min(por_mes, key=lambda m: m["pct_bajo_3"])
-        t_min = min(m["temperatura_media"] for m in por_mes)
-        t_max = max(m["temperatura_media"] for m in por_mes)
-        texto += (
-            f" Los grupos de puntos no son temperaturas distintas sino épocas distintas: en {peor['nombre']} "
-            f"el {_coma(peor['pct_bajo_3'], 0)} % de las lecturas estuvo por debajo de 3 mg/L, y en "
-            f"{mejor['nombre']} solo el {_coma(mejor['pct_bajo_3'], 0)} %, con temperaturas medias entre "
-            f"{_coma(t_min, 1)} y {_coma(t_max, 1)} °C en todos los meses. Por eso el R² con la temperatura es "
-            f"casi nulo ({_coma(r2)}): lo que cambió entre esas épocas hay que buscarlo en el manejo del "
-            "estanque, como la aireación, la carga de peces o la alimentación."
-        )
-    return texto
-
-
 # ----------------------------------------------------------------------
-# 3) Crecimiento de tilapia por temperatura
+# 3) Crecimiento de tilapia por temperatura y oxigeno
 # ----------------------------------------------------------------------
 def _soderberg(t: float) -> float:
     return -1.6707 + 0.09682 * t
+
+
+def factor_oxigeno(od: float) -> float:
+    """delta de Yi (1998): 1 sobre el OD critico, 0 bajo el minimo, lineal entre ambos."""
+    return min(1.0, max(0.0, (od - OD_MINIMO) / (OD_CRITICO - OD_MINIMO)))
 
 
 def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
@@ -416,147 +543,204 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         bio = con.execute(
             text(
                 f"""
-                SELECT b.fecha_muestreo AS fecha, AVG(bd.longitud_cm) AS l_cm, COUNT(bd.id) AS peces
+                SELECT b.fecha_muestreo AS fecha, MAX(b.tasa_supervivencia_porcentaje) AS supervivencia,
+                       MAX(b.conversion_alimenticia) AS conversion, MAX(b.total_alimento_consumido_kg) AS alimento,
+                       MAX(b.observaciones) AS observacion
                 FROM `{safe}`.`biometrias` b
-                JOIN `{safe}`.`biometria_detalles` bd ON bd.biometria_id = b.id
                 WHERE b.deleted_at IS NULL
                 GROUP BY b.fecha_muestreo ORDER BY b.fecha_muestreo
                 """
             )
         ).mappings().all()
-    if len(bio) < 2:
-        return {"disponible": False, "motivo": "Hacen falta al menos dos biometrías."}
+        peces = con.execute(
+            text(
+                f"""
+                SELECT b.fecha_muestreo AS fecha, bd.longitud_cm AS l_cm
+                FROM `{safe}`.`biometrias` b
+                JOIN `{safe}`.`biometria_detalles` bd ON bd.biometria_id = b.id
+                WHERE b.deleted_at IS NULL AND bd.longitud_cm IS NOT NULL
+                ORDER BY b.fecha_muestreo
+                """
+            )
+        ).mappings().all()
+    largos: dict[date, list[float]] = {}
+    for p in peces:
+        largos.setdefault(p["fecha"], []).append(float(p["l_cm"]) * 10.0)
+    fechas = sorted(largos)
+    if len(fechas) < 3:
+        return {"disponible": False, "motivo": "Hacen falta al menos tres biometrías."}
+    extra = {b["fecha"]: b for b in bio}
 
     diaria = _temperatura_diaria(filas_crudas)
     dias_con_dato = sorted(diaria)
+    od_dia: dict[date, list[float]] = {}
+    for f in limpias:
+        od_dia.setdefault(f["cuando"].date(), []).append(f["od"])
+    ph_atascado = _rachas_planas([f["ph"] for f in filas_crudas])
+    ph_dia: dict[date, list[float]] = {}
+    for i, f in enumerate(filas_crudas):
+        ph = _numero(f["ph"])
+        if i not in ph_atascado and ph is not None and 3.0 <= ph <= 11.0:
+            ph_dia.setdefault(f["created_at"].date(), []).append(ph)
 
-    def temp_del_dia(dia: date) -> tuple[float | None, bool]:
-        """Temperatura del dia; si falta, se interpola entre los dias vecinos."""
+    def temp_del_dia(dia: date) -> float | None:
         if dia in diaria:
-            return diaria[dia], True
+            return diaria[dia]
         antes = [d for d in dias_con_dato if d < dia]
         despues = [d for d in dias_con_dato if d > dia]
         if antes and despues:
             a, z = antes[-1], despues[0]
-            peso = (dia - a).days / (z - a).days
-            return diaria[a] + peso * (diaria[z] - diaria[a]), False
-        return None, False
+            return diaria[a] + (dia - a).days / (z - a).days * (diaria[z] - diaria[a])
+        return diaria[antes[-1]] if antes else None
 
-    medidas = [(b["fecha"], float(b["l_cm"]) * 10.0, int(b["peces"])) for b in bio]
+    def delta_del_dia(dia: date) -> float | None:
+        v = od_dia.get(dia, [])
+        return float(np.mean([factor_oxigeno(x) for x in v])) if len(v) >= 20 else None
 
-    # Longitud que predice la recta, acumulando dia a dia desde la primera
-    # biometria con la temperatura real de cada dia.
-    inicio, largo_inicial, _ = medidas[0]
-    fin = medidas[-1][0]
-    largo = largo_inicial
-    serie_prevista = [[inicio.isoformat(), round(largo, 1)]]
-    dias_reales = 0
-    dias_totales = 0
+    # Proyeccion dia a dia desde la primera biometria, con la temperatura y el
+    # oxigeno reales de cada dia. Sin lecturas validas de oxigeno se asume que
+    # no limito (delta = 1), y se cuenta cuantos dias fueron asi.
+    inicio = fechas[0]
+    medio_inicial = float(np.mean(largos[inicio]))
+    sola, corregida = medio_inicial, medio_inicial
+    serie_sola = [[inicio.isoformat(), round(sola, 1)]]
+    serie_corregida = [[inicio.isoformat(), round(corregida, 1)]]
+    diario: dict[date, tuple[float, float, float | None]] = {}
     dia = inicio
-    while dia < fin:
-        t, real = temp_del_dia(dia)
-        dias_totales += 1
-        if t is not None:
-            largo += max(0.0, _soderberg(t))
-            dias_reales += int(real)
+    while dia < fechas[-1]:
+        t = temp_del_dia(dia)
+        g = max(0.0, _soderberg(t)) if t is not None else 0.0
+        d = delta_del_dia(dia)
+        diario[dia] = (g, g * (1.0 if d is None else d), d)
+        sola += diario[dia][0]
+        corregida += diario[dia][1]
         dia += timedelta(days=1)
-        serie_prevista.append([dia.isoformat(), round(largo, 1)])
-    previsto_en = {fecha: v for fecha, v in serie_prevista}
+        serie_sola.append([dia.isoformat(), round(sola, 1)])
+        serie_corregida.append([dia.isoformat(), round(corregida, 1)])
 
-    intervalos = []
-    for (fa, la, _), (fz, lz, _) in zip(medidas, medidas[1:]):
-        dias = (fz - fa).days
-        if dias <= 0:
+    tramos = []
+    for fa, fz in zip(fechas, fechas[1:]):
+        dias = [fa + timedelta(days=k) for k in range((fz - fa).days)]
+        if not dias:
             continue
-        temps_tramo = [diaria[d] for d in dias_con_dato if fa <= d < fz]
-        tmedia = float(np.mean(temps_tramo)) if temps_tramo else None
-        # El oxigeno del tramo no entra en la recta; se ensena porque es lo
-        # primero que hay que mirar cuando el pez crece menos de lo que su
-        # temperatura permite.
-        od_tramo = np.asarray([f["od"] for f in limpias if fa <= f["cuando"].date() < fz], float)
-        intervalos.append(
+        medido = (np.mean(largos[fz]) - np.mean(largos[fa])) / len(dias)
+        deltas = [diario[x][2] for x in dias if diario[x][2] is not None]
+        ods = [v for x in dias for v in od_dia.get(x, [])]
+        phs = [v for x in dias for v in ph_dia.get(x, [])]
+        temps = [diaria[x] for x in dias if x in diaria]
+        b = extra.get(fz, {})
+        observacion = (b.get("observacion") or "").strip()
+        tramos.append(
             {
                 "desde": fa.isoformat(),
                 "hasta": fz.isoformat(),
-                "dias": dias,
-                "dias_con_temperatura": len(temps_tramo),
-                "temperatura_media": round(tmedia, 2) if tmedia is not None else None,
-                "observado_mm_dia": round((lz - la) / dias, 3),
-                "soderberg_mm_dia": round(_soderberg(tmedia), 3) if tmedia is not None else None,
-                "lecturas_oxigeno": int(od_tramo.size),
-                "oxigeno_medio": round(float(od_tramo.mean()), 2) if od_tramo.size else None,
-                "pct_oxigeno_bajo_3": round(100.0 * float(np.mean(od_tramo < 3.0)), 1) if od_tramo.size else None,
+                "dias": len(dias),
+                "temperatura_media": round(float(np.mean(temps)), 2) if temps else None,
+                "oxigeno_medio": round(float(np.mean(ods)), 2) if ods else None,
+                "pct_oxigeno_bajo_3": round(100.0 * float(np.mean(np.asarray(ods) < 3.0)), 1) if ods else None,
+                "delta_medio": round(float(np.mean(deltas)), 2) if deltas else None,
+                "dias_sin_oxigeno": len(dias) - len(deltas),
+                "ph_medio": round(float(np.mean(phs)), 2) if phs else None,
+                "observado_mm_dia": round(float(medido), 3),
+                "soderberg_mm_dia": round(float(np.mean([diario[x][0] for x in dias])), 3),
+                "corregido_mm_dia": round(float(np.mean([diario[x][1] for x in dias])), 3),
+                "supervivencia_pct": float(b["supervivencia"]) if b.get("supervivencia") is not None else None,
+                "conversion_alimenticia": float(b["conversion"]) if b.get("conversion") is not None else None,
+                "observacion": observacion if observacion and observacion.lower() != "sin observaciones" else None,
             }
         )
-    validos = [i for i in intervalos if i["soderberg_mm_dia"] is not None]
-    r2 = None
-    if len(validos) >= 2:
-        r2 = round(_r2([i["observado_mm_dia"] for i in validos], [i["soderberg_mm_dia"] for i in validos]), 3)
 
-    comparacion_longitud = [
-        {
-            "fecha": f.isoformat(),
-            "medido_mm": round(l, 1),
-            "previsto_mm": previsto_en.get(f.isoformat()),
-            "peces": p,
-        }
-        for f, l, p in medidas
-    ]
+    obs = [x["observado_mm_dia"] for x in tramos]
+    pred = [x["corregido_mm_dia"] for x in tramos]
+    pred_sola = [x["soderberg_mm_dia"] for x in tramos]
+    r2 = round(_r2(obs, pred), 3)
+    r2_sola = round(_r2(obs, pred_sola), 3)
+    ultimo = max(diaria) if diaria else None
 
     return {
         "disponible": True,
-        "tipo": "Regresión lineal simple (Söderberg)",
-        "formula": "Crecimiento diario en longitud (mm/día) = −1,6707 + 0,09682 × temperatura (°C)",
-        "fuente": "Informe 17, ecuación 1. Söderberg, tilapia del Nilo macho, R² = 0,95 en su publicación.",
+        "tipo": "Regresión lineal de Söderberg con factor limitante de oxígeno (Yi)",
+        "formula": "ΔL (mm/día) = (−1,6707 + 0,09682 × T) × δ(OD)",
+        "formula_delta": f"δ = 1 si OD > {_coma(OD_CRITICO, 1)};  δ = (OD − {_coma(OD_MINIMO, 1)}) ÷ ({_coma(OD_CRITICO, 1)} − {_coma(OD_MINIMO, 1)}) entre ambos;  δ = 0 si OD < {_coma(OD_MINIMO, 1)} mg/L",
+        "que_se_compara": "Crecimiento en longitud medido entre biometrías frente al que predice el modelo",
+        "eje_x": "Crecimiento medido (mm/día)",
+        "eje_y": "Crecimiento que predice el modelo (mm/día)",
+        "puntos_validacion": [[x["observado_mm_dia"], x["corregido_mm_dia"], x["desde"], x["hasta"]] for x in tramos],
+        "puntos_soderberg": [[x["observado_mm_dia"], x["soderberg_mm_dia"], x["desde"], x["hasta"]] for x in tramos],
+        "r2": r2,
+        "mae": round(_mae(obs, pred), 3),
+        "comparacion": [
+            {"metodo": "Söderberg con factor de oxígeno (el modelo)", "r2": r2, "mae": round(_mae(obs, pred), 3)},
+            {"metodo": "Söderberg sola, solo temperatura", "r2": r2_sola, "mae": round(_mae(obs, pred_sola), 3)},
+        ],
         "dominio_validado": [21, 30],
-        "que_se_compara": "Crecimiento en longitud medido entre biometrías frente al que predice la recta",
-        "eje_x": "Temperatura media del agua en el intervalo (°C)",
-        "eje_y": "Crecimiento diario en longitud (mm/día)",
-        # Rango completo en que vive la tilapia. Por debajo de 17,3 C la recta da
-        # valores negativos y un pez no encoge: se dibuja en cero.
         "linea_modelo": [[t, round(max(0.0, _soderberg(t)), 3)] for t in range(10, 46)],
         "cero_de_la_recta_c": round(1.6707 / 0.09682, 1),
-        "puntos": [[i["temperatura_media"], i["observado_mm_dia"]] for i in validos],
-        "intervalos": intervalos,
-        "r2": r2,
-        "serie_longitud_prevista": serie_prevista,
-        "longitudes": comparacion_longitud,
-        "cobertura_temperatura": {"dias_con_dato": dias_reales, "dias_totales": dias_totales},
-        "ultimo_dia": _ultimo_dia(diaria),
-        "lectura": _lectura_crecimiento(validos, r2),
+        "puntos_temperatura": [[x["temperatura_media"], x["observado_mm_dia"], x["corregido_mm_dia"], x["desde"], x["hasta"]] for x in tramos if x["temperatura_media"] is not None],
+        "intervalos": tramos,
+        "peces": [[f.isoformat(), round(v, 1)] for f in fechas for v in largos[f]],
+        "longitudes": [
+            {
+                "fecha": f.isoformat(),
+                "medido_mm": round(float(np.mean(largos[f])), 1),
+                "peces": len(largos[f]),
+                "previsto_mm": dict(serie_corregida).get(f.isoformat()),
+                "previsto_sola_mm": dict(serie_sola).get(f.isoformat()),
+            }
+            for f in fechas
+        ],
+        "serie_longitud_prevista": serie_corregida,
+        "serie_longitud_soderberg": serie_sola,
+        "ultimo_dia": _ultimo_dia_crecimiento(ultimo, diaria, od_dia) if ultimo else None,
+        "lectura": _lectura_crecimiento(tramos, r2, r2_sola),
     }
 
 
-def _ultimo_dia(diaria: dict[date, float]) -> dict[str, Any] | None:
-    if not diaria:
-        return None
-    dia = max(diaria)
+def _ultimo_dia_crecimiento(dia: date, diaria, od_dia) -> dict[str, Any]:
     t = diaria[dia]
+    ods = od_dia.get(dia, [])
+    d = float(np.mean([factor_oxigeno(x) for x in ods])) if len(ods) >= 20 else None
+    g = max(0.0, _soderberg(t))
     return {
         "fecha": dia.isoformat(),
         "temperatura_media": round(t, 2),
-        "soderberg_mm_dia": round(max(0.0, _soderberg(t)), 3),
+        "oxigeno_medio": round(float(np.mean(ods)), 2) if ods else None,
+        "delta": round(d, 2) if d is not None else None,
+        "soderberg_mm_dia": round(g, 3),
+        "corregido_mm_dia": round(g * (1.0 if d is None else d), 3),
         "en_rango_validado": 21.0 <= t <= 30.0,
     }
 
 
-def _lectura_crecimiento(tramos: list, r2) -> str:
-    if len(tramos) < 2 or r2 is None:
-        return "Hacen falta al menos dos intervalos entre biometrías para contrastar la recta."
-    primero, ultimo = tramos[0], tramos[-1]
+def _lectura_crecimiento(tramos: list, r2: float, r2_sola: float) -> str:
     texto = (
-        f"Con {len(tramos)} intervalos entre biometrías el R² ({_coma(r2)}) es solo orientativo"
-        + ("; que sea negativo significa que la recta acierta menos que usar el promedio de los tramos. " if r2 < 0 else ". ")
-        + f"La temperatura media apenas cambió ({_coma(primero['temperatura_media'], 1)} °C en el primer tramo y "
-        f"{_coma(ultimo['temperatura_media'], 1)} °C en el último) y la recta predice casi lo mismo para ambos "
-        f"({_coma(primero['soderberg_mm_dia'])} y {_coma(ultimo['soderberg_mm_dia'])} mm/día), pero el pez creció "
-        f"{_coma(primero['observado_mm_dia'])} y {_coma(ultimo['observado_mm_dia'])} mm/día. Esa caída no la explica "
-        "la temperatura."
+        f"Con el factor de oxígeno el R² pasa de {_coma(r2_sola)} (solo temperatura) a {_coma(r2)}. "
+        f"Son {len(tramos)} intervalos entre biometrías, así que el R² es orientativo: hacen falta biometrías más "
+        "seguidas para afirmarlo con fuerza."
     )
-    if (ultimo.get("lecturas_oxigeno") or 0) >= 50 and ultimo.get("oxigeno_medio") is not None:
+    sin_od = [x for x in tramos if x["dias_sin_oxigeno"] >= x["dias"] * 0.5]
+    if sin_od:
+        x = sin_od[0]
         texto += (
-            f" En el último tramo el oxígeno medio fue {_coma(ultimo['oxigeno_medio'])} mg/L y el "
-            f"{_coma(ultimo['pct_oxigeno_bajo_3'], 0)} % de las lecturas limpias estuvo por debajo de 3 mg/L."
+            f" Del {_fecha_texto(x['desde'])} al {_fecha_texto(x['hasta'])} no hay lecturas válidas de oxígeno, así que ahí se asume que no "
+            "limitó; el pez creció más de lo que predice la recta."
+        )
+    peor = min(tramos, key=lambda x: x["observado_mm_dia"])
+    if peor["corregido_mm_dia"] > peor["observado_mm_dia"] * 2:
+        partes = []
+        if peor.get("pct_oxigeno_bajo_3") is not None:
+            partes.append(f"el {_coma(peor['pct_oxigeno_bajo_3'], 0)} % de las lecturas de oxígeno bajo 3 mg/L")
+        if peor.get("ph_medio") is not None:
+            partes.append(f"pH medio de {_coma(peor['ph_medio'], 1)}")
+        if peor.get("supervivencia_pct") is not None and peor["supervivencia_pct"] < 100:
+            partes.append(f"supervivencia de {_coma(peor['supervivencia_pct'], 1)} %")
+        if peor.get("conversion_alimenticia") is not None and peor["conversion_alimenticia"] > 3:
+            partes.append(f"conversión alimenticia de {_coma(peor['conversion_alimenticia'], 0)}")
+        texto += (
+            f" El tramo que falla es el del {_fecha_texto(peor['desde'])} al {_fecha_texto(peor['hasta'])}: el modelo predice "
+            f"{_coma(peor['corregido_mm_dia'])} mm/día y el pez creció {_coma(peor['observado_mm_dia'])}. "
+            + ("En ese tramo se registró " + ", ".join(partes) + ". " if partes else "")
+            + "Mortalidad, lesiones y alimento que no se convierte en peso no están en la ecuación."
         )
     return texto
 
