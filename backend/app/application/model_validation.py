@@ -28,10 +28,13 @@ import math
 import pickle
 import time
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
 from sqlalchemy import text
+
+from backend.app.application import model_projection as P
 
 RACHA_ATASCO = 30
 MUESTRA_MAX = 600
@@ -231,7 +234,7 @@ def _proyeccion_oxigeno(filas_crudas) -> dict[str, Any]:
         if (_numero(f["oxigeno_disuelto"]) or 0.0) >= OD_PISO
     ]
     grid = M._rejilla(M.descartar_sensor_atascado(filas))
-    X, cambio, actual, futuro = [], [], [], []
+    X, cambio, actual, futuro, momentos = [], [], [], [], []
     for casilla in sorted(grid):
         previas = [casilla - timedelta(minutes=M.BIN_MINUTOS * d) for d in M.DESFASES]
         objetivo = casilla + timedelta(minutes=M.BIN_MINUTOS * M.PASOS_HORIZONTE)
@@ -241,6 +244,7 @@ def _proyeccion_oxigeno(filas_crudas) -> dict[str, Any]:
         if fila is None:
             continue
         X.append(fila)
+        momentos.append(casilla)
         actual.append(grid[casilla][0])
         futuro.append(grid[objetivo][0])
         cambio.append(grid[objetivo][0] - grid[casilla][0])
@@ -308,6 +312,7 @@ def _proyeccion_oxigeno(filas_crudas) -> dict[str, Any]:
         ],
         "reparto": f"{_miles(corte_train)} ventanas de entrenamiento y {_miles(len(Xte))} de prueba, en orden temporal",
         "prevision_actual": prevision,
+        "horizontes": P.proyeccion_oxigeno_gb(gb, X, momentos, actual, grid, momentos[corte_train], M._rejilla(filas), M),
         "lectura": lectura,
     }
 
@@ -401,6 +406,9 @@ def _estado_oxigeno(limpias) -> dict[str, Any]:
 
     # Modelo final con todo el historico, para la curva del ciclo y la proyeccion.
     a, b_sen, b_cos = _ajuste(horas, ciclo)
+    horizontes = P.proyeccion_oxigeno_diaria(
+        _horarias(limpias), _ajuste(horas, ciclo, 0, corte), (a, b_sen, b_cos), horas[corte]["hora"]
+    )
     amplitud = math.hypot(b_sen, b_cos)
     hora_max = (math.degrees(math.atan2(b_sen, b_cos)) % 360) / 15
     hora_min = (hora_max + 12) % 24
@@ -460,6 +468,7 @@ def _estado_oxigeno(limpias) -> dict[str, Any]:
         "minimo_esperado": {"cuando": minimo[0], "od_mg_l": minimo[1]},
         "maximo_esperado": {"cuando": maximo[0], "od_mg_l": maximo[1]},
         "temperatura": _oxigeno_y_temperatura(limpias),
+        "horizontes": horizontes,
         "lectura": _lectura_estado(comparacion, amplitud, hora_max, hora_min),
     }
 
@@ -561,6 +570,7 @@ def factor_oxigeno(od: float, critico: float = OD_CRITICO, minimo: float = OD_MI
     return min(1.0, max(0.0, (od - minimo) / (critico - minimo)))
 
 
+@lru_cache(maxsize=4096)
 def fotoperiodo_horas(dia: date, latitud: float = LATITUD) -> float:
     """Horas de luz del dia, modelo CBM de Forsythe et al. (1995)."""
     J = dia.timetuple().tm_yday
@@ -604,6 +614,25 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
                 """
             )
         ).mappings().all()
+        documento = con.execute(
+            text(
+                f"""
+                SELECT ce.fecha_inicio AS etapa_inicio, ce.fecha_fin AS etapa_fin, ce.peso_final_gr AS etapa_peso_final,
+                       e.nombre AS etapa, ce.volumen_piscigranja_m3 AS volumen, ces.fecha_siembra, ces.cantidad_siembra,
+                       ces.peso_inicial_gr AS siembra_peso, ces.peso_final_gr AS peso_final_objetivo,
+                       c.nombre AS campania, c.fecha_fin_estimada, c.estado
+                FROM `{safe}`.`biometrias` b
+                JOIN `{safe}`.`campania_etapas` ce ON ce.id = b.campania_etapa_id
+                LEFT JOIN `{safe}`.`etapas` e ON e.id = ce.etapa_id
+                JOIN `{safe}`.`campania_especies` ces ON ces.id = ce.campania_especie_id
+                JOIN `{safe}`.`campanias` c ON c.id = ces.campania_id
+                WHERE b.deleted_at IS NULL
+                ORDER BY b.fecha_muestreo DESC
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+    documento = dict(documento) if documento else {}
     pesos: dict[date, list[float]] = {}
     largos: dict[date, list[float]] = {}
     for p in peces:
@@ -648,7 +677,14 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         if i not in ph_atascado and ph is not None and 3.0 <= ph <= 11.0:
             ph_dia.setdefault(f["created_at"].date(), []).append(ph)
 
+    memoria_temp: dict = {}
+
     def temp_del_dia(dia: date) -> float:
+        if dia not in memoria_temp:
+            memoria_temp[dia] = _temp_del_dia(dia)
+        return memoria_temp[dia]
+
+    def _temp_del_dia(dia: date) -> float:
         if dia in diaria:
             return diaria[dia]
         antes = [d for d in dias_con_dato if d < dia]
@@ -658,9 +694,14 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
             return diaria[a] + (dia - a).days / (z - a).days * (diaria[z] - diaria[a])
         return diaria[antes[-1]] if antes else diaria[despues[0]]
 
+    memoria_delta: dict = {}
+
     def delta_del_dia(dia: date, critico=OD_CRITICO, minimo=OD_MINIMO) -> float | None:
-        v = od_dia.get(dia, [])
-        return float(np.mean([factor_oxigeno(x, critico, minimo) for x in v])) if len(v) >= 20 else None
+        clave = (dia, critico, minimo)
+        if clave not in memoria_delta:
+            v = od_dia.get(dia, [])
+            memoria_delta[clave] = float(np.mean([factor_oxigeno(x, critico, minimo) for x in v])) if len(v) >= 20 else None
+        return memoria_delta[clave]
 
     variantes = {
         "modelo": lambda d: delta_del_dia(d),
@@ -668,15 +709,57 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         "sin_od": lambda d: 1.0,
     }
 
-    def simular(w0: float, desde: date, hasta: date, variante: str = "modelo") -> dict[date, float]:
+    volumen = float(documento["volumen"]) if documento.get("volumen") else None
+
+    def peces_en(dia: date) -> float | None:
+        """Peces en el estanque ese dia, entre los conteos de cada biometria."""
+        for b in bio:
+            if b["fecha_inicial"] and b["fecha_inicial"] <= dia < b["fecha_muestreo"]:
+                ini, act = b["cantidad_peces_iniciales"], b["cantidad_peces_actuales"]
+                if ini is None or act is None:
+                    return None
+                frac = (dia - b["fecha_inicial"]).days / (b["fecha_muestreo"] - b["fecha_inicial"]).days
+                return float(ini) + frac * (float(act) - float(ini))
+        ultimo = bio[-1]["cantidad_peces_actuales"]
+        return float(ultimo) if ultimo is not None else None
+
+    def alimento_disponible(w: float, dia: date, critica: float | None) -> float:
+        """f de Yi (1998): 1 bajo la biomasa critica y critica/biomasa encima."""
+        n = peces_en(dia)
+        if critica is None or not volumen or not n:
+            return 1.0
+        biomasa = n * w / 1000.0 / volumen
+        return 1.0 if biomasa <= critica else critica / biomasa
+
+    def simular(w0: float, desde: date, hasta: date, variante: str = "modelo", critica: float | None = None) -> dict[date, float]:
+        critica = criticas.get(variante) if critica is None else critica
         w, dia, salida = w0, desde, {desde: w0}
         while dia < hasta:
             d = variantes[variante](dia)
-            anab, cat = _paso_yi(w, temp_del_dia(dia), 1.0 if d is None else d, fotoperiodo_horas(dia) / 12.0)
+            anab, cat = _paso_yi(w, temp_del_dia(dia), 1.0 if d is None else d, fotoperiodo_horas(dia) / 12.0, alimento_disponible(w, dia, critica))
             w = max(0.01, w + anab - cat)
             dia += timedelta(days=1)
             salida[dia] = w
         return salida
+
+    # Unico parametro que se calibra: la biomasa critica del estanque, con la
+    # siembra y las biometrias anteriores a las lecturas validas de oxigeno.
+    # Las biometrias posteriores quedan fuera y sirven de prueba.
+    medidas_peso = [f for f in fechas if f in pesos]
+    primer_od = next((d for d in sorted(od_dia) if len(od_dia[d]) >= 20), None)
+    calibracion = [f for f in medidas_peso if primer_od is None or f <= primer_od + timedelta(days=7)]
+    if len(calibracion) < 2:
+        calibracion = medidas_peso[:2]
+    criticas: dict[str, float | None] = {}
+    for v in variantes:
+        mejor = None
+        if volumen:
+            for x in np.arange(0.2, 8.0, 0.02):
+                recorrido = simular(medias[inicio], inicio, calibracion[-1], v, float(x))
+                error = sum((math.log(recorrido[f]) - math.log(medias[f])) ** 2 for f in calibracion)
+                if mejor is None or error < mejor[0]:
+                    mejor = (error, float(x))
+        criticas[v] = round(mejor[1], 2) if mejor else None
 
     # Trayectoria continua desde la siembra: el modelo no vuelve a mirar las
     # biometrias en el camino.
@@ -861,13 +944,24 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
     hoy = max(diaria) if diaria else fin
     t_hoy = temp_del_dia(hoy)
     d_hoy = delta_del_dia(hoy)
-    anab_hoy, cat_hoy = _paso_yi(medias[fin], t_hoy, 1.0 if d_hoy is None else d_hoy, fotoperiodo_horas(hoy) / 12.0)
+    anab_hoy, cat_hoy = _paso_yi(medias[fin], t_hoy, 1.0 if d_hoy is None else d_hoy, fotoperiodo_horas(hoy) / 12.0, alimento_disponible(medias[fin], hoy, criticas["modelo"]))
+
+    horizontes = _proyeccion_crecimiento(
+        documento, inicio, fin, hoy, medias, pesos, diaria, od_dia, temp_del_dia, delta_del_dia, talla_de_peso, simular,
+        lambda w, dia: alimento_disponible(w, dia, criticas["modelo"]),
+    )
 
     return {
         "disponible": True,
         "tipo": "Modelo bioenergético de crecimiento (Yi, 1998)",
-        "formula": "dW/dt = 0,233 · ρ · τ(T) · δ(OD) · W^0,67 − 0,00133 · e^(0,0132·(T − 24)) · W^0,81",
-        "formula_delta": "δ = 1 si OD > 5;  δ = (OD − 3) ÷ 2 entre 3 y 5;  δ = 0 si OD < 3 mg/L.   τ = e^(−4,6·((33 − T) ÷ 9)^4) bajo 33 °C.   ρ = horas de luz ÷ 12",
+        "formula": "dW/dt = 0,233 · ρ · τ(T) · δ(OD) · f · W^0,67 − 0,00133 · e^(0,0132·(T − 24)) · W^0,81",
+        "formula_delta": (
+            "δ = 1 si OD > 5;  δ = (OD − 3) ÷ 2 entre 3 y 5;  δ = 0 si OD < 3 mg/L.   τ = e^(−4,6·((33 − T) ÷ 9)^4) bajo 33 °C.   "
+            f"ρ = horas de luz ÷ 12.   f = 1 bajo {_coma(criticas['modelo'] or 0, 2)} kg/m³ de biomasa y {_coma(criticas['modelo'] or 0, 2)} ÷ biomasa encima"
+        ),
+        "biomasa_critica_kg_m3": criticas["modelo"],
+        "calibrado_con": [f.isoformat() for f in calibracion],
+        "volumen_m3": volumen,
         "que_se_compara": "Peso y crecimiento que predice el modelo frente a lo medido en las biometrías",
         "eje_x": "Peso medido (g)",
         "eje_y": "Peso que predice el modelo (g)",
@@ -915,33 +1009,173 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
             "ultima_biometria": fin.isoformat(),
             "peso_ultima_biometria_g": round(medias[fin], 2),
         },
-        "parametros": {**YI, "od_critico": OD_CRITICO, "od_minimo": OD_MINIMO, "latitud": LATITUD, "f": 1.0, "phi_amoniaco": 1.0},
-        "lectura": _lectura_crecimiento(tramos, modelo, comparacion, ventana),
+        "horizontes": horizontes,
+        "parametros": {**YI, "od_critico": OD_CRITICO, "od_minimo": OD_MINIMO, "latitud": LATITUD, "biomasa_critica_kg_m3": criticas["modelo"], "phi_amoniaco": 1.0},
+        "lectura": _lectura_crecimiento(tramos, modelo, comparacion, ventana, criticas["modelo"], calibracion),
     }
 
 
-def _lectura_crecimiento(tramos: list, modelo: dict, comparacion: list, ventana: dict | None) -> str:
+# Ciclo comercial de referencia del Informe 18 (Aguilar et al., 2010, alimento
+# extruido): peso y talla total al sembrar y al final de cada fase.
+CICLO_REFERENCIA = [
+    {"dia": 0, "fase": "Siembra de alevines", "peso_g": 0.805, "talla_mm": 36.5},
+    {"dia": 45, "fase": "Fin de alevinaje", "peso_g": 40.0, "talla_mm": 130.0},
+    {"dia": 77, "fase": "Fin de crecimiento 1", "peso_g": 118.0, "talla_mm": 184.3},
+    {"dia": 177, "fase": "Fin de crecimiento 2", "peso_g": 445.0, "talla_mm": 280.0},
+    {"dia": 249, "fase": "Fin de finalización", "peso_g": 606.0, "talla_mm": 320.0},
+]
+
+
+def _proyeccion_crecimiento(doc, inicio, fin, hoy, medias, pesos, diaria, od_dia, temp_del_dia, delta_del_dia, talla_de_peso, simular, alimento) -> dict[str, Any]:
+    """Proyeccion del peso desde la ultima biometria, por escenarios de oxigeno.
+
+    Hasta hoy se usan la temperatura y el oxigeno medidos; desde hoy, la
+    temperatura del mismo dia del anio anterior (o la media de los ultimos 30
+    dias si no hay registro) y un oxigeno segun el escenario.
+    """
+    siembra = doc.get("fecha_siembra") or inicio
+    fin_ciclo = siembra + timedelta(days=CICLO_REFERENCIA[-1]["dia"])
+    fin_proyeccion = max(hoy + timedelta(days=P.HORIZONTES_DIAS[-1]["dias"]), fin_ciclo)
+
+    recientes = [d for d in diaria if hoy - timedelta(days=30) < d <= hoy]
+    t_reciente = float(np.mean([diaria[d] for d in recientes])) if recientes else temp_del_dia(hoy)
+    deltas = [x for x in (delta_del_dia(d) for d in recientes) if x is not None]
+    delta_reciente = float(np.mean(deltas)) if deltas else 1.0
+    meses: dict[str, list] = {}
+    for d in od_dia:
+        x = delta_del_dia(d)
+        if x is not None:
+            meses.setdefault(d.strftime("%Y-%m"), []).append(x)
+    meses = {m: float(np.mean(v)) for m, v in meses.items() if len(v) >= 10}
+    peor = min(meses.items(), key=lambda x: x[1]) if meses else None
+
+    def temp_futura(d):
+        anterior = d - timedelta(days=365)
+        return diaria.get(anterior, t_reciente)
+
+    def recorrer(delta_futuro: float):
+        w, d = medias[fin], fin
+        serie = [[d.isoformat(), round(w, 2), round(talla_de_peso(w), 1)]]
+        while d < fin_proyeccion:
+            if d < hoy:
+                t = temp_del_dia(d)
+                dl = delta_del_dia(d)
+                dl = 1.0 if dl is None else dl
+            else:
+                t, dl = temp_futura(d), delta_futuro
+            anab, cat = _paso_yi(w, t, dl, fotoperiodo_horas(d) / 12.0, alimento(w, d))
+            w = max(0.01, w + anab - cat)
+            d += timedelta(days=1)
+            serie.append([d.isoformat(), round(w, 2), round(talla_de_peso(w), 1)])
+        return serie
+
+    escenarios = [
+        {
+            "id": "reciente",
+            "nombre": "Si siguen las condiciones de los últimos 30 días",
+            "delta": round(delta_reciente, 2),
+            "serie": recorrer(delta_reciente),
+        },
+        {"id": "sin_limite", "nombre": "Con el oxígeno siempre sobre 5 mg/L", "delta": 1.0, "serie": recorrer(1.0)},
+    ]
+    if peor is not None:
+        anio, mes = peor[0].split("-")
+        escenarios.append(
+            {
+                "id": "peor_mes",
+                "nombre": f"Con el oxígeno de {MESES[int(mes) - 1]} {anio}, el peor mes medido",
+                "delta": round(peor[1], 2),
+                "serie": recorrer(peor[1]),
+            }
+        )
+
+    opciones = [{**h, "hasta": (hoy + timedelta(days=h["dias"])).isoformat()} for h in P.HORIZONTES_DIAS]
+    if fin_ciclo > hoy:
+        opciones.append({"id": "ciclo", "dias": (fin_ciclo - hoy).days, "nombre": f"Hasta el fin del ciclo (día {CICLO_REFERENCIA[-1]['dia']})", "hasta": fin_ciclo.isoformat()})
+    fin_campania = doc.get("fecha_fin_estimada")
+    if fin_campania and fin_campania > hoy:
+        opciones.append({"id": "campania", "dias": (fin_campania - hoy).days, "nombre": "Hasta el fin estimado de la campaña", "hasta": fin_campania.isoformat()})
+
+    # Cuanto acierta proyectar desde una biometria hasta las siguientes, con
+    # las condiciones medidas en el camino.
+    medidas = [f for f in sorted(medias) if f in pesos]
+    comprobacion = []
+    for i, fa in enumerate(medidas):
+        for fz in medidas[i + 1:]:
+            recorrido = simular(medias[fa], fa, fz)
+            dias = [fa + timedelta(days=k) for k in range((fz - fa).days)]
+            con_od = sum(1 for x in dias if delta_del_dia(x) is not None) >= len(dias) / 2
+            comprobacion.append(
+                {
+                    "desde": fa.isoformat(),
+                    "hasta": fz.isoformat(),
+                    "dias": len(dias),
+                    "medido_g": round(medias[fz], 2),
+                    "predicho_g": round(recorrido[fz], 2),
+                    "error_pct": round(100.0 * (recorrido[fz] - medias[fz]) / medias[fz], 1),
+                    "oxigeno_medido": con_od,
+                }
+            )
+
+    return {
+        "opciones": opciones,
+        "hoy": hoy.isoformat(),
+        "desde_biometria": fin.isoformat(),
+        "peso_desde_g": round(medias[fin], 2),
+        "temperatura_futura": round(t_reciente, 2),
+        "escenarios": escenarios,
+        "ciclo": {
+            "campania": doc.get("campania"),
+            "estado": doc.get("estado"),
+            "siembra": siembra.isoformat(),
+            "alevines": int(doc["cantidad_siembra"]) if doc.get("cantidad_siembra") else None,
+            "peso_siembra_g": float(doc["siembra_peso"]) if doc.get("siembra_peso") is not None else round(medias[inicio], 2),
+            "talla_siembra_mm": round(talla_de_peso(float(doc["siembra_peso"]) if doc.get("siembra_peso") is not None else medias[inicio]), 1),
+            "peso_final_objetivo_g": float(doc["peso_final_objetivo"]) if doc.get("peso_final_objetivo") is not None else None,
+            "fin_campania": fin_campania.isoformat() if fin_campania else None,
+            "etapa": doc.get("etapa"),
+            "fin_etapa": doc["etapa_fin"].isoformat() if doc.get("etapa_fin") else None,
+            "peso_final_etapa_g": float(doc["etapa_peso_final"]) if doc.get("etapa_peso_final") is not None else None,
+            "fin_ciclo_referencia": fin_ciclo.isoformat(),
+            "referencia": [{**r, "fecha": (siembra + timedelta(days=r["dia"])).isoformat()} for r in CICLO_REFERENCIA],
+        },
+        "comprobacion": comprobacion,
+        "supuestos": (
+            f"Desde la última biometría ({_fecha_texto(fin.isoformat())}, {_coma(medias[fin], 1)} g) hasta hoy el modelo usa la "
+            "temperatura, el oxígeno y las horas de luz medidos. Desde hoy usa la temperatura del mismo día del año anterior "
+            f"cuando existe registro (si no, {_coma(t_reciente, 1)} °C, la media de los últimos 30 días), las horas de luz "
+            "calculadas para cada fecha y un oxígeno según el escenario. La talla sale del peso con la relación peso–talla "
+            "del estanque. La biomasa usa el último conteo de peces; si hay mortalidad, cosecha parcial o enfermedad, el lote "
+            "crecerá distinto."
+        ),
+    }
+
+
+def _lectura_crecimiento(tramos: list, modelo: dict, comparacion: list, ventana: dict | None, critica: float | None, calibracion: list) -> str:
     od_yi, sin_od = comparacion[1], comparacion[2]
+    maximo = next((c for c in comparacion if c.get("mide") == "referencia"), None)
+    soderberg = next((c for c in comparacion if c.get("mide") == "talla"), None)
     texto = ""
+    if critica is not None and calibracion:
+        texto += (
+            f"El único parámetro calibrado con este estanque es la biomasa crítica ({_coma(critica, 2)} kg/m³), usando la "
+            f"siembra y las biometrías hasta el {_fecha_texto(calibracion[-1].isoformat())}: sobre esa biomasa la comida "
+            "por pez deja de alcanzar y el crecimiento se frena, como en el modelo de Yi. "
+        )
     if ventana and ventana["puntos"]:
         detalle = "; ".join(
             f"el {_fecha_texto(x['fecha'])} predice {_coma(x['predicho_g'], 1)} g y se midieron {_coma(x['medido_g'], 1)} g ({'+' if x['error_pct'] >= 0 else ''}{_coma(x['error_pct'], 1)} %)"
             for x in ventana["puntos"]
         )
-        texto += (
-            f"Desde el {_fecha_texto(ventana['desde'])}, cuando empiezan las lecturas válidas de oxígeno, el modelo parte del "
-            f"peso medido ({_coma(ventana['peso_inicial_g'], 1)} g) y sin ajustar ningún parámetro {detalle}. "
-        )
-    maximo = next((c for c in comparacion if c.get("mide") == "referencia"), None)
-    soderberg = next((c for c in comparacion if c.get("mide") == "talla"), None)
+        texto += f"En las biometrías que no entraron en la calibración, partiendo del peso medido el {_fecha_texto(ventana['desde'])}, {detalle}. "
     texto += (
-        f"Sobre toda la campaña, desde la siembra, explica el {_coma(modelo['r2_peces'] * 100, 0)} % del peso de los peces medidos"
-        + (f" (con peces de distinto tamaño en cada fecha, lo máximo posible es {_coma(maximo['r2_peces'] * 100, 0)} %)" if maximo else "")
-        + f" y, pasado a talla con la relación peso–talla del estanque, el {_coma(modelo['r2_talla'] * 100, 0)} % de la talla"
-        + (f"; la recta de Söderberg, que calcula talla directamente, llega a {_coma(soderberg['r2_talla'])}" if soderberg else "")
-        + f". El oxígeno es lo que hace funcionar el modelo: sin su factor el R² del peso cae a {_coma(sin_od['r2_peces'])} "
-        f"y con los umbrales del propio Yi (3,0 y 0,3 mg/L) a {_coma(od_yi['r2_peces'])}. Con los del Informe 16 el "
-        "crecimiento se frena bajo 5 mg/L y se detiene bajo 3."
+        f"Sobre toda la campaña explica el {_coma(modelo['r2_peces'] * 100, 0)} % del peso de los peces medidos"
+        + (f" (lo máximo posible con peces de distinto tamaño en cada fecha es {_coma(maximo['r2_peces'] * 100, 0)} %)" if maximo else "")
+        + f" y el {_coma(modelo['r2_talla'] * 100, 0)} % de su talla"
+        + (f"; Söderberg, que calcula talla directamente, llega a {_coma(soderberg['r2_talla'])}" if soderberg else "")
+        + ". "
+        f"El oxígeno se nota sobre todo tramo a tramo: el R² del crecimiento por tramo es {_coma(modelo['r2'])} con los umbrales "
+        f"del Informe 16, {_coma(od_yi['r2'])} con los del propio Yi (3,0 y 0,3 mg/L) y {_coma(sin_od['r2'])} sin factor de oxígeno."
     )
     critico = [t for t in tramos if t.get("pct_oxigeno_bajo_3") is not None and t["pct_oxigeno_bajo_3"] >= 90]
     if critico:
@@ -955,11 +1189,7 @@ def _lectura_crecimiento(tramos: list, modelo: dict, comparacion: list, ventana:
         texto += "."
     sin_dato = [t for t in tramos if t["dias_sin_oxigeno"] >= t["dias"] * 0.5]
     if sin_dato:
-        texto += (
-            f" Hasta el {_fecha_texto(sin_dato[-1]['hasta'])} no hay lecturas válidas de oxígeno y se toma δ = 1: ahí el "
-            "modelo no puede saber si el oxígeno o la comida ya limitaban, y por esos tramos el R² del crecimiento tramo por "
-            f"tramo queda en {_coma(modelo['r2'])}."
-        )
+        texto += f" Hasta el {_fecha_texto(sin_dato[-1]['hasta'])} no hay lecturas válidas de oxígeno y se toma δ = 1."
     texto += " No hay sensor de amoníaco, así que su factor se toma como 1."
     return texto
 
@@ -1070,6 +1300,16 @@ def _calidad_agua(engine, limpias) -> dict[str, Any]:
         "nitrato_mg_l": round(float(ultima[3]), 2),
     }
 
+    horas_d = _con_nivel(_horarias(limpias))
+    corte_d = int(len(horas_d) * 0.70)
+    horizontes = None
+    if len(horas_d) >= 48:
+        corte_tiempo = max(cuando[corte], horas_d[corte_d]["hora"])
+        horizontes = P.proyeccion_calidad(
+            svm, etiquetas, WQ, _horarias(limpias), _ajuste(horas_d, ["sen", "cos"], 0, corte_d),
+            _ajuste(horas_d, ["sen", "cos"]), con_nitrato, corte_tiempo,
+        )
+
     dependencias = []
     for etiqueta, i in (("Oxígeno disuelto (mg/L)", 2), ("Ion nitrato (mg/L)", 3), ("Temperatura (°C)", 0), ("pH", 1)):
         x = X[:, i]
@@ -1092,6 +1332,7 @@ def _calidad_agua(engine, limpias) -> dict[str, Any]:
         "matriz_confusion": matriz,
         "serie_svm": serie_svm,
         "clase_actual": clase_actual,
+        "horizontes": horizontes,
         "orden_clases": etiquetas,
         "dependencias": dependencias,
         "origen_etiqueta": (
