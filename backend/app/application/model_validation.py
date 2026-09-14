@@ -316,11 +316,6 @@ MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto
 MIN_LECTURAS_MES = 50
 HORAS_PREVIAS_MIN = 18
 
-# Factor de oxigeno del modelo de crecimiento de Yi (1998), ecuaciones 16 y 17
-# del Informe 16. Valores para tilapia del Nilo usados por Khater et al. (2021).
-OD_CRITICO = 3.0
-OD_MINIMO = 0.3
-
 
 def _hora_texto(h: float) -> str:
     minutos = int(round(h * 4)) * 15 % 1440
@@ -528,13 +523,58 @@ def _oxigeno_y_temperatura(limpias) -> dict[str, Any]:
 # ----------------------------------------------------------------------
 # 3) Crecimiento de tilapia por temperatura y oxigeno
 # ----------------------------------------------------------------------
+# Modelo bioenergetico de Yi (1998), ecuacion 12 del Informe 16:
+#
+#   dW/dt = h·b(1−a)·ρ·τ(T)·δ(OD)·f·W^m − kmin·exp[j(T − Tmin)]·W^n
+#
+# El primer termino es el anabolismo (lo que el pez come y asimila) y el
+# segundo el catabolismo en ayunas. Los coeficientes son los publicados por Yi
+# para tilapia del Nilo, tal como los tabulan Chahid et al. (2021):
+# h·b(1−a) = 0,8 × 0,62 × 0,47 = 0,233, el mismo 0,2919 × 0,81 = 0,236 de la
+# tabla 1 del Informe 16. La tabla del Informe 16 da ademas los umbrales de
+# oxigeno (critico 5, minimo 3 mg/L, Khater et al. 2021); su Kmin = 0,25 no se
+# usa porque con el peso en gramos el catabolismo supera al anabolismo desde el
+# primer dia. Nada de esto se ajusta con los datos del estanque: las
+# biometrias solo sirven para comprobar.
+YI = {"h": 0.8, "b": 0.62, "a": 0.53, "m": 0.67, "n": 0.81, "kmin": 0.00133, "j": 0.0132,
+      "t_min": 24.0, "t_opt": 33.0, "t_max": 40.0}
+OD_CRITICO = 5.0
+OD_MINIMO = 3.0
+OD_CRITICO_YI = 3.0
+OD_MINIMO_YI = 0.3
+LATITUD = -12.05  # Lima
+
+
 def _soderberg(t: float) -> float:
     return -1.6707 + 0.09682 * t
 
 
-def factor_oxigeno(od: float) -> float:
-    """delta de Yi (1998): 1 sobre el OD critico, 0 bajo el minimo, lineal entre ambos."""
-    return min(1.0, max(0.0, (od - OD_MINIMO) / (OD_CRITICO - OD_MINIMO)))
+def factor_temperatura(t: float) -> float:
+    """τ de Yi (1998), ecuaciones 13 y 14 del Informe 16."""
+    if t < YI["t_opt"]:
+        return math.exp(-4.6 * ((YI["t_opt"] - t) / (YI["t_opt"] - YI["t_min"])) ** 4)
+    return math.exp(-4.6 * ((t - YI["t_opt"]) / (YI["t_max"] - YI["t_opt"])) ** 4)
+
+
+def factor_oxigeno(od: float, critico: float = OD_CRITICO, minimo: float = OD_MINIMO) -> float:
+    """δ, ecuaciones 16 y 17 del Informe 16: 1 sobre el critico, 0 bajo el minimo."""
+    return min(1.0, max(0.0, (od - minimo) / (critico - minimo)))
+
+
+def fotoperiodo_horas(dia: date, latitud: float = LATITUD) -> float:
+    """Horas de luz del dia, modelo CBM de Forsythe et al. (1995)."""
+    J = dia.timetuple().tm_yday
+    theta = 0.2163108 + 2 * math.atan(0.9671396 * math.tan(0.00860 * (J - 186)))
+    phi = math.asin(0.39795 * math.cos(theta))
+    lat = math.radians(latitud)
+    x = (math.sin(math.radians(0.8333)) + math.sin(lat) * math.sin(phi)) / (math.cos(lat) * math.cos(phi))
+    return 24 - (24 / math.pi) * math.acos(max(-1.0, min(1.0, x)))
+
+
+def _paso_yi(w: float, t: float, delta: float, rho: float, f: float = 1.0) -> tuple[float, float]:
+    anabolismo = YI["h"] * YI["b"] * (1 - YI["a"]) * rho * factor_temperatura(t) * delta * f * w ** YI["m"]
+    catabolismo = YI["kmin"] * math.exp(YI["j"] * (t - YI["t_min"])) * w ** YI["n"]
+    return anabolismo, catabolismo
 
 
 def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
@@ -543,33 +583,45 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         bio = con.execute(
             text(
                 f"""
-                SELECT b.fecha_muestreo AS fecha, MAX(b.tasa_supervivencia_porcentaje) AS supervivencia,
-                       MAX(b.conversion_alimenticia) AS conversion, MAX(b.total_alimento_consumido_kg) AS alimento,
-                       MAX(b.observaciones) AS observacion
-                FROM `{safe}`.`biometrias` b
-                WHERE b.deleted_at IS NULL
-                GROUP BY b.fecha_muestreo ORDER BY b.fecha_muestreo
+                SELECT fecha_inicial, fecha_muestreo, cantidad_peces_iniciales, cantidad_peces_actuales, bi_kg,
+                       total_alimento_consumido_kg AS alimento, tasa_supervivencia_porcentaje AS supervivencia,
+                       conversion_alimenticia AS conversion, observaciones AS observacion
+                FROM `{safe}`.`biometrias`
+                WHERE deleted_at IS NULL
+                ORDER BY fecha_muestreo
                 """
             )
         ).mappings().all()
         peces = con.execute(
             text(
                 f"""
-                SELECT b.fecha_muestreo AS fecha, bd.longitud_cm AS l_cm
+                SELECT b.fecha_muestreo AS fecha, bd.peso_g AS peso, bd.longitud_cm AS l_cm
                 FROM `{safe}`.`biometrias` b
                 JOIN `{safe}`.`biometria_detalles` bd ON bd.biometria_id = b.id
-                WHERE b.deleted_at IS NULL AND bd.longitud_cm IS NOT NULL
+                WHERE b.deleted_at IS NULL AND bd.peso_g IS NOT NULL
                 ORDER BY b.fecha_muestreo
                 """
             )
         ).mappings().all()
+    pesos: dict[date, list[float]] = {}
     largos: dict[date, list[float]] = {}
     for p in peces:
-        largos.setdefault(p["fecha"], []).append(float(p["l_cm"]) * 10.0)
-    fechas = sorted(largos)
-    if len(fechas) < 3:
-        return {"disponible": False, "motivo": "Hacen falta al menos tres biometrías."}
-    extra = {b["fecha"]: b for b in bio}
+        pesos.setdefault(p["fecha"], []).append(float(p["peso"]))
+        if p["l_cm"] is not None:
+            largos.setdefault(p["fecha"], []).append(float(p["l_cm"]) * 10.0)
+    if len(pesos) < 2 or not bio:
+        return {"disponible": False, "motivo": "Hacen falta al menos dos biometrías con pesos."}
+
+    # Punto de partida: la siembra registrada en la primera biometria (biomasa
+    # inicial entre peces sembrados); si no esta, la primera biometria medida.
+    medias = {f: float(np.mean(v)) for f, v in pesos.items()}
+    primera = bio[0]
+    if primera["bi_kg"] and primera["cantidad_peces_iniciales"] and primera["fecha_inicial"]:
+        siembra = primera["fecha_inicial"]
+        medias.setdefault(siembra, float(primera["bi_kg"]) * 1000.0 / float(primera["cantidad_peces_iniciales"]))
+    fechas = sorted(medias)
+    inicio, fin = fechas[0], fechas[-1]
+    info = {b["fecha_muestreo"]: b for b in bio}
 
     diaria = _temperatura_diaria(filas_crudas)
     dias_con_dato = sorted(diaria)
@@ -583,7 +635,7 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         if i not in ph_atascado and ph is not None and 3.0 <= ph <= 11.0:
             ph_dia.setdefault(f["created_at"].date(), []).append(ph)
 
-    def temp_del_dia(dia: date) -> float | None:
+    def temp_del_dia(dia: date) -> float:
         if dia in diaria:
             return diaria[dia]
         antes = [d for d in dias_con_dato if d < dia]
@@ -591,157 +643,211 @@ def _crecimiento(engine, legacy: str, filas_crudas, limpias) -> dict[str, Any]:
         if antes and despues:
             a, z = antes[-1], despues[0]
             return diaria[a] + (dia - a).days / (z - a).days * (diaria[z] - diaria[a])
-        return diaria[antes[-1]] if antes else None
+        return diaria[antes[-1]] if antes else diaria[despues[0]]
 
-    def delta_del_dia(dia: date) -> float | None:
+    def delta_del_dia(dia: date, critico=OD_CRITICO, minimo=OD_MINIMO) -> float | None:
         v = od_dia.get(dia, [])
-        return float(np.mean([factor_oxigeno(x) for x in v])) if len(v) >= 20 else None
+        return float(np.mean([factor_oxigeno(x, critico, minimo) for x in v])) if len(v) >= 20 else None
 
-    # Proyeccion dia a dia desde la primera biometria, con la temperatura y el
-    # oxigeno reales de cada dia. Sin lecturas validas de oxigeno se asume que
-    # no limito (delta = 1), y se cuenta cuantos dias fueron asi.
-    inicio = fechas[0]
-    medio_inicial = float(np.mean(largos[inicio]))
-    sola, corregida = medio_inicial, medio_inicial
-    serie_sola = [[inicio.isoformat(), round(sola, 1)]]
-    serie_corregida = [[inicio.isoformat(), round(corregida, 1)]]
-    diario: dict[date, tuple[float, float, float | None]] = {}
-    dia = inicio
-    while dia < fechas[-1]:
-        t = temp_del_dia(dia)
-        g = max(0.0, _soderberg(t)) if t is not None else 0.0
-        d = delta_del_dia(dia)
-        diario[dia] = (g, g * (1.0 if d is None else d), d)
-        sola += diario[dia][0]
-        corregida += diario[dia][1]
-        dia += timedelta(days=1)
-        serie_sola.append([dia.isoformat(), round(sola, 1)])
-        serie_corregida.append([dia.isoformat(), round(corregida, 1)])
+    variantes = {
+        "modelo": lambda d: delta_del_dia(d),
+        "od_yi": lambda d: delta_del_dia(d, OD_CRITICO_YI, OD_MINIMO_YI),
+        "sin_od": lambda d: 1.0,
+    }
 
+    def simular(w0: float, desde: date, hasta: date, variante: str = "modelo") -> dict[date, float]:
+        w, dia, salida = w0, desde, {desde: w0}
+        while dia < hasta:
+            d = variantes[variante](dia)
+            anab, cat = _paso_yi(w, temp_del_dia(dia), 1.0 if d is None else d, fotoperiodo_horas(dia) / 12.0)
+            w = max(0.01, w + anab - cat)
+            dia += timedelta(days=1)
+            salida[dia] = w
+        return salida
+
+    # Trayectoria continua desde la siembra: el modelo no vuelve a mirar las
+    # biometrias en el camino.
+    trayectoria = {v: simular(medias[inicio], inicio, fin, v) for v in variantes}
+
+    # Cada tramo, arrancando del peso medido al inicio del tramo.
     tramos = []
     for fa, fz in zip(fechas, fechas[1:]):
         dias = [fa + timedelta(days=k) for k in range((fz - fa).days)]
         if not dias:
             continue
-        medido = (np.mean(largos[fz]) - np.mean(largos[fa])) / len(dias)
-        deltas = [diario[x][2] for x in dias if diario[x][2] is not None]
+        pred = {v: (simular(medias[fa], fa, fz, v)[fz] - medias[fa]) / len(dias) for v in variantes}
+        deltas = [delta_del_dia(x) for x in dias]
+        conocidos = [x for x in deltas if x is not None]
         ods = [v for x in dias for v in od_dia.get(x, [])]
         phs = [v for x in dias for v in ph_dia.get(x, [])]
-        temps = [diaria[x] for x in dias if x in diaria]
-        b = extra.get(fz, {})
+        temps = [temp_del_dia(x) for x in dias]
+        b = info.get(fz, {})
         observacion = (b.get("observacion") or "").strip()
         tramos.append(
             {
                 "desde": fa.isoformat(),
                 "hasta": fz.isoformat(),
                 "dias": len(dias),
-                "temperatura_media": round(float(np.mean(temps)), 2) if temps else None,
+                "peso_inicial_g": round(medias[fa], 2),
+                "peso_final_g": round(medias[fz], 2),
+                "inicio_es_siembra": fa not in pesos,
+                "temperatura_media": round(float(np.mean(temps)), 2),
+                "tau_medio": round(float(np.mean([factor_temperatura(t) for t in temps])), 2),
                 "oxigeno_medio": round(float(np.mean(ods)), 2) if ods else None,
                 "pct_oxigeno_bajo_3": round(100.0 * float(np.mean(np.asarray(ods) < 3.0)), 1) if ods else None,
-                "delta_medio": round(float(np.mean(deltas)), 2) if deltas else None,
-                "dias_sin_oxigeno": len(dias) - len(deltas),
+                "delta_medio": round(float(np.mean(conocidos)), 2) if conocidos else None,
+                "dias_sin_oxigeno": len(dias) - len(conocidos),
+                "fotoperiodo_h": round(float(np.mean([fotoperiodo_horas(x) for x in dias])), 2),
                 "ph_medio": round(float(np.mean(phs)), 2) if phs else None,
-                "observado_mm_dia": round(float(medido), 3),
-                "soderberg_mm_dia": round(float(np.mean([diario[x][0] for x in dias])), 3),
-                "corregido_mm_dia": round(float(np.mean([diario[x][1] for x in dias])), 3),
+                "observado_g_dia": round((medias[fz] - medias[fa]) / len(dias), 3),
+                "predicho_g_dia": round(pred["modelo"], 3),
+                "predicho_od_yi_g_dia": round(pred["od_yi"], 3),
+                "predicho_sin_od_g_dia": round(pred["sin_od"], 3),
                 "supervivencia_pct": float(b["supervivencia"]) if b.get("supervivencia") is not None else None,
                 "conversion_alimenticia": float(b["conversion"]) if b.get("conversion") is not None else None,
                 "observacion": observacion if observacion and observacion.lower() != "sin observaciones" else None,
             }
         )
 
-    obs = [x["observado_mm_dia"] for x in tramos]
-    pred = [x["corregido_mm_dia"] for x in tramos]
-    pred_sola = [x["soderberg_mm_dia"] for x in tramos]
-    r2 = round(_r2(obs, pred), 3)
-    r2_sola = round(_r2(obs, pred_sola), 3)
-    ultimo = max(diaria) if diaria else None
+    obs_t = [t["observado_g_dia"] for t in tramos]
+
+    def resumen_variante(clave: str, campo: str) -> dict[str, float]:
+        pred_t = [t[campo] for t in tramos]
+        fechas_peces = [f for f in fechas if f in pesos]
+        obs_p = [x for f in fechas_peces for x in pesos[f]]
+        pred_p = [trayectoria[clave][f] for f in fechas_peces for _ in pesos[f]]
+        return {
+            "r2": round(_r2(obs_t, pred_t), 3),
+            "mae": round(_mae(obs_t, pred_t), 3),
+            "r2_peces": round(_r2(obs_p, pred_p), 3),
+        }
+
+    modelo = resumen_variante("modelo", "predicho_g_dia")
+    comparacion = [
+        {"metodo": "Yi con OD crítico 5 y mínimo 3 mg/L, del Informe 16 (el modelo)", **modelo},
+        {"metodo": "Yi con sus propios umbrales de OD, 3,0 y 0,3 mg/L", **resumen_variante("od_yi", "predicho_od_yi_g_dia")},
+        {"metodo": "Yi sin factor de oxígeno (δ = 1)", **resumen_variante("sin_od", "predicho_sin_od_g_dia")},
+    ]
+    # Referencia en longitud: la recta de Soderberg sola, sobre los mismos tramos.
+    fl = [f for f in fechas if f in largos]
+    if len(fl) >= 3:
+        obs_l = [(np.mean(largos[z]) - np.mean(largos[a])) / (z - a).days for a, z in zip(fl, fl[1:])]
+        pred_l = [float(np.mean([max(0.0, _soderberg(temp_del_dia(a + timedelta(days=k)))) for k in range((z - a).days)])) for a, z in zip(fl, fl[1:])]
+        comparacion.append({"metodo": "Söderberg por temperatura (Informe 17), en longitud", "r2": round(_r2(obs_l, pred_l), 3), "mae": None, "r2_peces": None, "unidad": "mm/día"})
+
+    fechas_peces = [f for f in fechas if f in pesos]
+    pares = [[round(x, 2), round(trayectoria["modelo"][f], 2), f.isoformat()] for f in fechas_peces for x in pesos[f]]
+    obs_p = [p[0] for p in pares]
+    pred_p = [p[1] for p in pares]
+
+    # Ventana con oxigeno medido: desde la primera biometria a partir de la cual
+    # los tramos tienen lecturas validas, sin volver a mirar los pesos.
+    ventana = None
+    con_od = [t for t in tramos if t["dias_sin_oxigeno"] < t["dias"] / 2]
+    if con_od:
+        arranque = date.fromisoformat(con_od[0]["desde"])
+        recorrido = simular(medias[arranque], arranque, fin)
+        ventana = {
+            "desde": arranque.isoformat(),
+            "peso_inicial_g": round(medias[arranque], 2),
+            "puntos": [
+                {
+                    "fecha": f.isoformat(),
+                    "medido_g": round(medias[f], 2),
+                    "predicho_g": round(recorrido[f], 2),
+                    "error_pct": round(100.0 * (recorrido[f] - medias[f]) / medias[f], 1),
+                }
+                for f in fechas
+                if f > arranque
+            ],
+            "serie": [[d.isoformat(), round(w, 2)] for d, w in sorted(recorrido.items())],
+        }
+
+    # Condicion de hoy: los factores del modelo con la temperatura y el oxigeno
+    # de hoy, para un pez del peso de la ultima biometria. No se estima el peso
+    # actual del lote: desde esa biometria no hay pesos que lo comprueben.
+    hoy = max(diaria) if diaria else fin
+    t_hoy = temp_del_dia(hoy)
+    d_hoy = delta_del_dia(hoy)
+    anab_hoy, cat_hoy = _paso_yi(medias[fin], t_hoy, 1.0 if d_hoy is None else d_hoy, fotoperiodo_horas(hoy) / 12.0)
 
     return {
         "disponible": True,
-        "tipo": "Regresión lineal de Söderberg con factor limitante de oxígeno (Yi)",
-        "formula": "ΔL (mm/día) = (−1,6707 + 0,09682 × T) × δ(OD)",
-        "formula_delta": f"δ = 1 si OD > {_coma(OD_CRITICO, 1)};  δ = (OD − {_coma(OD_MINIMO, 1)}) ÷ ({_coma(OD_CRITICO, 1)} − {_coma(OD_MINIMO, 1)}) entre ambos;  δ = 0 si OD < {_coma(OD_MINIMO, 1)} mg/L",
-        "que_se_compara": "Crecimiento en longitud medido entre biometrías frente al que predice el modelo",
-        "eje_x": "Crecimiento medido (mm/día)",
-        "eje_y": "Crecimiento que predice el modelo (mm/día)",
-        "puntos_validacion": [[x["observado_mm_dia"], x["corregido_mm_dia"], x["desde"], x["hasta"]] for x in tramos],
-        "puntos_soderberg": [[x["observado_mm_dia"], x["soderberg_mm_dia"], x["desde"], x["hasta"]] for x in tramos],
-        "r2": r2,
-        "mae": round(_mae(obs, pred), 3),
-        "comparacion": [
-            {"metodo": "Söderberg con factor de oxígeno (el modelo)", "r2": r2, "mae": round(_mae(obs, pred), 3)},
-            {"metodo": "Söderberg sola, solo temperatura", "r2": r2_sola, "mae": round(_mae(obs, pred_sola), 3)},
-        ],
-        "dominio_validado": [21, 30],
-        "linea_modelo": [[t, round(max(0.0, _soderberg(t)), 3)] for t in range(10, 46)],
-        "cero_de_la_recta_c": round(1.6707 / 0.09682, 1),
-        "puntos_temperatura": [[x["temperatura_media"], x["observado_mm_dia"], x["corregido_mm_dia"], x["desde"], x["hasta"]] for x in tramos if x["temperatura_media"] is not None],
+        "tipo": "Modelo bioenergético de crecimiento (Yi, 1998)",
+        "formula": "dW/dt = 0,233 · ρ · τ(T) · δ(OD) · W^0,67 − 0,00133 · e^(0,0132·(T − 24)) · W^0,81",
+        "formula_delta": "δ = 1 si OD > 5;  δ = (OD − 3) ÷ 2 entre 3 y 5;  δ = 0 si OD < 3 mg/L.   τ = e^(−4,6·((33 − T) ÷ 9)^4) bajo 33 °C.   ρ = horas de luz ÷ 12",
+        "que_se_compara": "Peso y crecimiento que predice el modelo frente a lo medido en las biometrías",
+        "eje_x": "Peso medido (g)",
+        "eje_y": "Peso que predice el modelo (g)",
+        "puntos": pares,
+        "puntos_totales": len(pares),
+        "recta": _recta(obs_p, pred_p),
+        "r2": modelo["r2_peces"],
+        "r2_tasas": modelo["r2"],
+        "mae": modelo["mae"],
+        "comparacion": comparacion,
         "intervalos": tramos,
-        "peces": [[f.isoformat(), round(v, 1)] for f in fechas for v in largos[f]],
-        "longitudes": [
-            {
-                "fecha": f.isoformat(),
-                "medido_mm": round(float(np.mean(largos[f])), 1),
-                "peces": len(largos[f]),
-                "previsto_mm": dict(serie_corregida).get(f.isoformat()),
-                "previsto_sola_mm": dict(serie_sola).get(f.isoformat()),
-            }
-            for f in fechas
-        ],
-        "serie_longitud_prevista": serie_corregida,
-        "serie_longitud_soderberg": serie_sola,
-        "ultimo_dia": _ultimo_dia_crecimiento(ultimo, diaria, od_dia) if ultimo else None,
-        "lectura": _lectura_crecimiento(tramos, r2, r2_sola),
+        "ventana_con_oxigeno": ventana,
+        "peces": [[f.isoformat(), round(x, 2)] for f in fechas_peces for x in pesos[f]],
+        "medias": [{"fecha": f.isoformat(), "peso_g": round(medias[f], 2), "medido": f in pesos, "previsto_g": round(trayectoria["modelo"][f], 2)} for f in fechas],
+        "serie_peso_modelo": [[d.isoformat(), round(w, 2)] for d, w in sorted(trayectoria["modelo"].items())],
+        "serie_peso_sin_od": [[d.isoformat(), round(w, 2)] for d, w in sorted(trayectoria["sin_od"].items())],
+        "curva_tau": [[t, round(factor_temperatura(t), 3)] for t in np.arange(20, 42.01, 0.5).round(1).tolist()],
+        "curva_delta": [[o, round(factor_oxigeno(o), 3)] for o in np.arange(0, 8.01, 0.1).round(1).tolist()],
+        "dias_temperatura": [[round(temp_del_dia(inicio + timedelta(days=k)), 2), round(factor_temperatura(temp_del_dia(inicio + timedelta(days=k))), 3)] for k in range((hoy - inicio).days + 1)],
+        "dias_oxigeno": [[round(float(np.mean(v)), 2), round(float(np.mean([factor_oxigeno(x) for x in v])), 3)] for d, v in sorted(od_dia.items()) if len(v) >= 20 and inicio <= d],
+        "hoy": {
+            "fecha": hoy.isoformat(),
+            "temperatura_media": round(t_hoy, 2),
+            "tau": round(factor_temperatura(t_hoy), 2),
+            "oxigeno_medio": round(float(np.mean(od_dia[hoy])), 2) if od_dia.get(hoy) else None,
+            "delta": round(d_hoy, 2) if d_hoy is not None else None,
+            "fotoperiodo_h": round(fotoperiodo_horas(hoy), 2),
+            "crecimiento_referencia_g_dia": round(anab_hoy - cat_hoy, 3),
+            "ultima_biometria": fin.isoformat(),
+            "peso_ultima_biometria_g": round(medias[fin], 2),
+        },
+        "parametros": {**YI, "od_critico": OD_CRITICO, "od_minimo": OD_MINIMO, "latitud": LATITUD, "f": 1.0, "phi_amoniaco": 1.0},
+        "lectura": _lectura_crecimiento(tramos, modelo, comparacion, ventana),
     }
 
 
-def _ultimo_dia_crecimiento(dia: date, diaria, od_dia) -> dict[str, Any]:
-    t = diaria[dia]
-    ods = od_dia.get(dia, [])
-    d = float(np.mean([factor_oxigeno(x) for x in ods])) if len(ods) >= 20 else None
-    g = max(0.0, _soderberg(t))
-    return {
-        "fecha": dia.isoformat(),
-        "temperatura_media": round(t, 2),
-        "oxigeno_medio": round(float(np.mean(ods)), 2) if ods else None,
-        "delta": round(d, 2) if d is not None else None,
-        "soderberg_mm_dia": round(g, 3),
-        "corregido_mm_dia": round(g * (1.0 if d is None else d), 3),
-        "en_rango_validado": 21.0 <= t <= 30.0,
-    }
-
-
-def _lectura_crecimiento(tramos: list, r2: float, r2_sola: float) -> str:
-    texto = (
-        f"Con el factor de oxígeno el R² pasa de {_coma(r2_sola)} (solo temperatura) a {_coma(r2)}. "
-        f"Son {len(tramos)} intervalos entre biometrías, así que el R² es orientativo: hacen falta biometrías más "
-        "seguidas para afirmarlo con fuerza."
+def _lectura_crecimiento(tramos: list, modelo: dict, comparacion: list, ventana: dict | None) -> str:
+    od_yi, sin_od = comparacion[1], comparacion[2]
+    texto = ""
+    if ventana and ventana["puntos"]:
+        detalle = "; ".join(
+            f"el {_fecha_texto(x['fecha'])} predice {_coma(x['predicho_g'], 1)} g y se midieron {_coma(x['medido_g'], 1)} g ({'+' if x['error_pct'] >= 0 else ''}{_coma(x['error_pct'], 1)} %)"
+            for x in ventana["puntos"]
+        )
+        texto += (
+            f"Desde el {_fecha_texto(ventana['desde'])}, cuando empiezan las lecturas válidas de oxígeno, el modelo parte del "
+            f"peso medido ({_coma(ventana['peso_inicial_g'], 1)} g) y sin ajustar ningún parámetro {detalle}. "
+        )
+    texto += (
+        f"Sobre toda la campaña, desde la siembra, explica el {_coma(modelo['r2_peces'] * 100, 0)} % del peso de los peces "
+        f"medidos. El oxígeno es lo que hace funcionar el modelo: sin su factor el R² del peso cae a {_coma(sin_od['r2_peces'])} "
+        f"y con los umbrales del propio Yi (3,0 y 0,3 mg/L) a {_coma(od_yi['r2_peces'])}. Con los del Informe 16 el "
+        "crecimiento se frena bajo 5 mg/L y se detiene bajo 3."
     )
-    sin_od = [x for x in tramos if x["dias_sin_oxigeno"] >= x["dias"] * 0.5]
-    if sin_od:
-        x = sin_od[0]
+    critico = [t for t in tramos if t.get("pct_oxigeno_bajo_3") is not None and t["pct_oxigeno_bajo_3"] >= 90]
+    if critico:
+        t = critico[0]
         texto += (
-            f" Del {_fecha_texto(x['desde'])} al {_fecha_texto(x['hasta'])} no hay lecturas válidas de oxígeno, así que ahí se asume que no "
-            "limitó; el pez creció más de lo que predice la recta."
+            f" Del {_fecha_texto(t['desde'])} al {_fecha_texto(t['hasta'])} el {_coma(t['pct_oxigeno_bajo_3'], 0)} % de las "
+            f"lecturas estuvo bajo 3 mg/L y el lote ganó {_coma(t['observado_g_dia'])} g/día"
         )
-    peor = min(tramos, key=lambda x: x["observado_mm_dia"])
-    if peor["corregido_mm_dia"] > peor["observado_mm_dia"] * 2:
-        partes = []
-        if peor.get("pct_oxigeno_bajo_3") is not None:
-            partes.append(f"el {_coma(peor['pct_oxigeno_bajo_3'], 0)} % de las lecturas de oxígeno bajo 3 mg/L")
-        if peor.get("ph_medio") is not None:
-            partes.append(f"pH medio de {_coma(peor['ph_medio'], 1)}")
-        if peor.get("supervivencia_pct") is not None and peor["supervivencia_pct"] < 100:
-            partes.append(f"supervivencia de {_coma(peor['supervivencia_pct'], 1)} %")
-        if peor.get("conversion_alimenticia") is not None and peor["conversion_alimenticia"] > 3:
-            partes.append(f"conversión alimenticia de {_coma(peor['conversion_alimenticia'], 0)}")
+        if t.get("conversion_alimenticia") and t["conversion_alimenticia"] > 3:
+            texto += f" con una conversión alimenticia de {_coma(t['conversion_alimenticia'], 0)}: comió pero no creció"
+        texto += "."
+    sin_dato = [t for t in tramos if t["dias_sin_oxigeno"] >= t["dias"] * 0.5]
+    if sin_dato:
         texto += (
-            f" El tramo que falla es el del {_fecha_texto(peor['desde'])} al {_fecha_texto(peor['hasta'])}: el modelo predice "
-            f"{_coma(peor['corregido_mm_dia'])} mm/día y el pez creció {_coma(peor['observado_mm_dia'])}. "
-            + ("En ese tramo se registró " + ", ".join(partes) + ". " if partes else "")
-            + "Mortalidad, lesiones y alimento que no se convierte en peso no están en la ecuación."
+            f" Hasta el {_fecha_texto(sin_dato[-1]['hasta'])} no hay lecturas válidas de oxígeno y se toma δ = 1: ahí el "
+            "modelo no puede saber si el oxígeno o la comida ya limitaban, y por esos tramos el R² del crecimiento tramo por "
+            f"tramo queda en {_coma(modelo['r2'])}."
         )
+    texto += " No hay sensor de amoníaco, así que su factor se toma como 1."
     return texto
 
 
