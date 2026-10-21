@@ -1,0 +1,16 @@
+[Unit]
+Description=Tilapia adaptive growth ML experimental loopback pilot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/python3 /root/flask_sismapiscis/aquaculture_backend/backend/research_runs/20261021_growth_adaptive/serving/install_pilot.py
+ExecStart=/usr/bin/docker exec -e PYTHONPATH=/app aquaculture_backend python /app/backend/research_runs/tilapia_growth_adaptive_20261021/pilot_service.py
+ExecStop=/usr/bin/python3 /root/flask_sismapiscis/aquaculture_backend/backend/research_runs/20261021_growth_adaptive/serving/stop_pilot.py
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
