@@ -15,6 +15,7 @@ from backend.app.api.v1.model_families import router as model_families_router
 from backend.app.api.v1.models import router as models_router
 from backend.app.api.v1.real_models import router as real_models_router
 from backend.app.api.v1.tilapia_growth_ml import router as tilapia_growth_ml_router
+from backend.app.api.v1.tilapia_growth_adaptive import router as tilapia_growth_adaptive_router
 
 
 api_router = APIRouter()
@@ -28,6 +29,7 @@ api_router.include_router(ml_lifecycle_router, tags=["ml-lifecycle"])
 api_router.include_router(models_router, tags=["models"])
 api_router.include_router(real_models_router, tags=["real-models"])
 api_router.include_router(tilapia_growth_ml_router, tags=["supervised-growth-ml"])
+api_router.include_router(tilapia_growth_adaptive_router, tags=["adaptive-growth-ml"])
 api_router.include_router(model_families_router, tags=["model-families"])
 api_router.include_router(frontend_router, tags=["frontend"])
 api_router.include_router(digital_twin_router, tags=["digital-twin"])
