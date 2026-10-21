@@ -1,0 +1,8 @@
+treatment,published_mean_sgr_pct_day,diagnostic_sgr_from_marginal_log_weights_60d,interpretation,source_doi,published_rate_source_table
+Control,1.31,3.016906612169142,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7
+GLE-5,1.62,3.4186450101949153,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7
+GLE-10,1.64,3.4849204952014277,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7
+SGLE-5,1.62,3.378183856411519,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7
+SGLE-10,1.59,3.387588566814791,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7
+MxLE-5,1.52,3.2241638231086425,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7
+MxLE-10,1.5,3.442631474932467,rate_discrepancy_requires_resolution_not_paired_individual_growth,10.5281/zenodo.11174309,7

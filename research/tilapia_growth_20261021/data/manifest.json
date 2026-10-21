@@ -1,0 +1,26 @@
+{
+  "observed_endpoint_rows": 1050,
+  "experimental_tanks": 21,
+  "treatments": 7,
+  "external_studies_normalized": 3,
+  "studies_with_growth_rate_QC_issues": 2,
+  "observed_weekly_cohort_means": 22,
+  "weekly_environment_summary_cells": 1701,
+  "source_docx_sha256": "312a3e85e9c18611bd79bed30f6414dfee69e0acb19cd86500e38f0b9f642b1d",
+  "warnings": [
+    "No individual identity across endpoints assumed.",
+    "Weekly environmental summaries cannot identify hours below an oxygen threshold.",
+    "Do not pool different ages into a universal fish weight histogram.",
+    "No corrected local biometric weight was accessed or used.",
+    "Kamble published SGR means do not reconcile with endpoint log-weight distributions over 60 days; benchmark uses reported endpoints and duration provisionally.",
+    "Opiyo interval rates/duration inconsistent: quarantined, excluded from training."
+  ],
+  "files": {
+    "opiyo_2024_QUARANTINED_summary.csv": "4f8f6e5dc482bc27f5f16cddf67156bd2e685636627d2a763ca8b0566e7a360c",
+    "kamble_2024_endpoint_samples.csv": "bf6924537c9c7f96040945b7765bfe5881c63935e582d7aea5f764cdd37a1b11",
+    "garcia_2012_observed_weekly_means.csv": "c39601aa399ae23e85067c00ec62d3d320786484d408ae63faf99f18bf25545e",
+    "kamble_2024_tank_intervals.csv": "555632353bb99e899c8f090123e2be2823b38cfd42b659665ebdd02d3584fee0",
+    "kamble_2024_rate_consistency_QC.csv": "5723293c8fe7704dc34e08e332d8e48dd59d592c2b70e726f7dd1eec8150edca",
+    "kamble_2024_weekly_environment.csv": "bbc2b8351d1fedf1515b11539f89136dbd65c5580ec059155e166c4b78af7137"
+  }
+}
