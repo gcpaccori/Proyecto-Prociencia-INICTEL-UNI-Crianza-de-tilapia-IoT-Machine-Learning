@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly prospective tilapia forecast archive
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=20
+Unit=tilapia-growth-prospective.service
+
+[Install]
+WantedBy=timers.target
