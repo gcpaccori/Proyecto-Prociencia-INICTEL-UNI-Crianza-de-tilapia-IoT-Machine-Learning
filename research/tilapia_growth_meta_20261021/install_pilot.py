@@ -3,6 +3,7 @@ from pathlib import Path
 import hashlib
 import json
 import subprocess
+import secrets
 
 BASE = Path(__file__).resolve().parent
 CONTAINER = 'aquaculture_backend'
@@ -41,6 +42,11 @@ if previous and {k:v for k,v in previous.items() if k!='available_at'} == {k:v f
     prior_time = previous.get('available_at')
 for name in ['pilot_service.py', 'serving_model.json']:
     run(['docker', 'cp', str(BASE/name), CONTAINER+':'+DEST+'/'+name])
+key = BASE/'api.key'
+if not key.exists():
+    key.write_text(secrets.token_urlsafe(48)); key.chmod(0o600)
+run(['docker', 'cp', str(key), CONTAINER+':'+DEST+'/api.key'])
+run(['docker', 'exec', CONTAINER, 'chmod', '600', DEST+'/api.key'])
 # Use the serving host clock for operational availability, not the analysis host.
 code = '''from pathlib import Path
 import json
@@ -51,4 +57,4 @@ a=json.loads(p.read_text());a['available_at']=PRIOR_TIME or datetime.now(timezon
 code = code.replace('PRIOR_TIME',repr(prior_time))
 run(['docker', 'exec', CONTAINER, 'python', '-c', code])
 subprocess.run(['python3',str(BASE/'stop_pilot.py')],check=True)
-print('Adaptive candidate installed on container loopback port 8013')
+print('Adaptive candidate installed on private Docker port 8013 with bearer authentication')

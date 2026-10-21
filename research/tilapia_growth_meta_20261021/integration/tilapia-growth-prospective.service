@@ -1,0 +1,10 @@
+[Unit]
+Description=Archive dated tilapia ML forecasts and sensor quality
+After=docker.service tilapia-growth-adaptive-pilot.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/flask_sismapiscis/aquaculture_backend/backend/research_runs/20261021_growth_adaptive/serving/capture_prospective.py
+TimeoutStartSec=240
+UMask=0077

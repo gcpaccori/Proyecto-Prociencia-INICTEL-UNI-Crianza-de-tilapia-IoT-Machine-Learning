@@ -105,7 +105,10 @@ El modelo devuelve las variables fuera de su dominio, la referencia de tendencia
 la corrección aprendida y `production_ready=false`. No se inventan intervalos de
 predicción calibrados.
 
-El piloto privado usa **127.0.0.1:8013 dentro de aquaculture_backend**, servicio
+El piloto usa **0.0.0.0:8013 dentro de aquaculture_backend**, exclusivamente en la
+red Docker compartida con Laravel, sin publicar ese puerto en el host. Exige una
+clave bearer en todas las rutas (incluida documentación). Laravel la lee de un
+archivo privado, nunca del navegador ni de variables Vite. El servicio
 `tilapia-growth-adaptive-pilot.service` en vmi2770917. `install_pilot.py` restaura
 archivos tras recreación del contenedor y rechaza sobrescribir código distinto.
 `stop_pilot.py` detiene solo el ejecutable exacto de este piloto. No se cambia
@@ -115,8 +118,10 @@ El registro de Git incorpora el router nuevo para su integración normal en el
 backend. La instalación experimental y la aplicación pública son despliegues
 distintos; un HTTP 200 del piloto no valida crecimiento biológico.
 
-Para volver atrás: detener/deshabilitar solo `tilapia-growth-adaptive-pilot.service`.
-El piloto v0.2 y la aplicación pública conservan su configuración.
+La vista Laravel se describe en `integration/README.md`. Para retirar la
+integración, primero deshabilitar el timer, restaurar las fuentes y el manifiesto
+Vite respaldados y retirar las dos rutas y archivos nuevos; después detener solo
+el piloto adaptativo. No eliminar los pronósticos ya emitidos ni sus artefactos.
 
 ### Verificación real de esta entrega
 
@@ -124,7 +129,7 @@ El servicio quedó activo y habilitado el 21/10/2026. Estado, pronóstico de pis
 y POST respondieron HTTP 200. Pronóstico de sensor futuro y cohorte mezclada
 respondieron HTTP 422. El piloto anterior siguió respondiendo HTTP 200 y el
 contenedor de la aplicación pública conservó su instante de arranque.
-La suite completa terminó con **123 pruebas de software aprobadas**; esos checks
+La suite completa, incluida la autenticación nueva, terminó con **124 pruebas de software aprobadas**; esos checks
 no son validación biológica.
 
 Se guardaron pronósticos prospectivos a 7, 14 y 28 días antes de conocer los pesos
