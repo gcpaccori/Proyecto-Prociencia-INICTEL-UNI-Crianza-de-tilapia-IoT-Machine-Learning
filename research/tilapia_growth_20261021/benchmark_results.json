@@ -1,0 +1,402 @@
+{
+  "initial_size_only": {
+    "n_intervals": 21,
+    "n_groups": 7,
+    "n_studies": 1,
+    "mae_g": 6.309594326881928,
+    "rmse_g": 8.084777214358349,
+    "mape_pct": 9.961300389651411,
+    "extrapolated_intervals": 6,
+    "predictions": [
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "Control_R1",
+        "held_out_group": "Control",
+        "observed_g": 49.184,
+        "predicted_g": 62.62305842233959,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "Control_R2",
+        "held_out_group": "Control",
+        "observed_g": 50.552,
+        "predicted_g": 61.988506022786105,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "Control_R3",
+        "held_out_group": "Control",
+        "observed_g": 57.98,
+        "predicted_g": 73.56718301210427,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-10_R1",
+        "held_out_group": "GLE-10",
+        "observed_g": 74.92399999999999,
+        "predicted_g": 62.31971067841904,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-10_R2",
+        "held_out_group": "GLE-10",
+        "observed_g": 78.304,
+        "predicted_g": 69.47242371920586,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-10_R3",
+        "held_out_group": "GLE-10",
+        "observed_g": 68.768,
+        "predicted_g": 67.67818382733074,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-5_R1",
+        "held_out_group": "GLE-5",
+        "observed_g": 60.576,
+        "predicted_g": 62.72493262477026,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-5_R2",
+        "held_out_group": "GLE-5",
+        "observed_g": 67.5,
+        "predicted_g": 61.4923854302419,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-5_R3",
+        "held_out_group": "GLE-5",
+        "observed_g": 70.968,
+        "predicted_g": 63.74397144881997,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-10_R1",
+        "held_out_group": "MxLE-10",
+        "observed_g": 62.468,
+        "predicted_g": 57.38161150659248,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-10_R2",
+        "held_out_group": "MxLE-10",
+        "observed_g": 67.888,
+        "predicted_g": 66.36242892453566,
+        "outside_training_range": [
+          "temperature_mean_c"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-10_R3",
+        "held_out_group": "MxLE-10",
+        "observed_g": 55.324,
+        "predicted_g": 56.3207546430333,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-5_R1",
+        "held_out_group": "MxLE-5",
+        "observed_g": 62.20399999999999,
+        "predicted_g": 64.01205394635853,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-5_R2",
+        "held_out_group": "MxLE-5",
+        "observed_g": 67.62,
+        "predicted_g": 72.12648158318312,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-5_R3",
+        "held_out_group": "MxLE-5",
+        "observed_g": 70.41199999999999,
+        "predicted_g": 72.71898279736236,
+        "outside_training_range": [
+          "temperature_mean_c"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-10_R1",
+        "held_out_group": "SGLE-10",
+        "observed_g": 59.172,
+        "predicted_g": 62.40813337756703,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-10_R2",
+        "held_out_group": "SGLE-10",
+        "observed_g": 74.468,
+        "predicted_g": 55.80644741247532,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-10_R3",
+        "held_out_group": "SGLE-10",
+        "observed_g": 72.41199999999999,
+        "predicted_g": 78.17127336955947,
+        "outside_training_range": [
+          "initial_weight_g"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-5_R1",
+        "held_out_group": "SGLE-5",
+        "observed_g": 52.24,
+        "predicted_g": 55.154493726958776,
+        "outside_training_range": [
+          "initial_weight_g",
+          "do_mean_mg_l"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-5_R2",
+        "held_out_group": "SGLE-5",
+        "observed_g": 62.268,
+        "predicted_g": 59.59599996668239,
+        "outside_training_range": [
+          "do_mean_mg_l"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-5_R3",
+        "held_out_group": "SGLE-5",
+        "observed_g": 70.036,
+        "predicted_g": 65.37720974719899,
+        "outside_training_range": [
+          "do_mean_mg_l"
+        ]
+      }
+    ],
+    "production_ready": false
+  },
+  "initial_size_temperature_oxygen": {
+    "n_intervals": 21,
+    "n_groups": 7,
+    "n_studies": 1,
+    "mae_g": 6.491663147700679,
+    "rmse_g": 8.18507396019471,
+    "mape_pct": 10.211710639340719,
+    "extrapolated_intervals": 6,
+    "predictions": [
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "Control_R1",
+        "held_out_group": "Control",
+        "observed_g": 49.184,
+        "predicted_g": 62.742587984900304,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "Control_R2",
+        "held_out_group": "Control",
+        "observed_g": 50.552,
+        "predicted_g": 61.087097590705675,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "Control_R3",
+        "held_out_group": "Control",
+        "observed_g": 57.98,
+        "predicted_g": 72.62672372002933,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-10_R1",
+        "held_out_group": "GLE-10",
+        "observed_g": 74.92399999999999,
+        "predicted_g": 62.357936754417366,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-10_R2",
+        "held_out_group": "GLE-10",
+        "observed_g": 78.304,
+        "predicted_g": 72.59995258591934,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-10_R3",
+        "held_out_group": "GLE-10",
+        "observed_g": 68.768,
+        "predicted_g": 69.59955300817155,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-5_R1",
+        "held_out_group": "GLE-5",
+        "observed_g": 60.576,
+        "predicted_g": 63.21607139221318,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-5_R2",
+        "held_out_group": "GLE-5",
+        "observed_g": 67.5,
+        "predicted_g": 62.46002717009381,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "GLE-5_R3",
+        "held_out_group": "GLE-5",
+        "observed_g": 70.968,
+        "predicted_g": 64.09577464427427,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-10_R1",
+        "held_out_group": "MxLE-10",
+        "observed_g": 62.468,
+        "predicted_g": 55.42378352628708,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-10_R2",
+        "held_out_group": "MxLE-10",
+        "observed_g": 67.888,
+        "predicted_g": 58.75458540490841,
+        "outside_training_range": [
+          "temperature_mean_c"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-10_R3",
+        "held_out_group": "MxLE-10",
+        "observed_g": 55.324,
+        "predicted_g": 55.89378625623077,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-5_R1",
+        "held_out_group": "MxLE-5",
+        "observed_g": 62.20399999999999,
+        "predicted_g": 63.54611981129184,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-5_R2",
+        "held_out_group": "MxLE-5",
+        "observed_g": 67.62,
+        "predicted_g": 74.71865367005073,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "MxLE-5_R3",
+        "held_out_group": "MxLE-5",
+        "observed_g": 70.41199999999999,
+        "predicted_g": 76.89071937888718,
+        "outside_training_range": [
+          "temperature_mean_c"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-10_R1",
+        "held_out_group": "SGLE-10",
+        "observed_g": 59.172,
+        "predicted_g": 62.28900800924561,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-10_R2",
+        "held_out_group": "SGLE-10",
+        "observed_g": 74.468,
+        "predicted_g": 55.89877189763346,
+        "outside_training_range": []
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-10_R3",
+        "held_out_group": "SGLE-10",
+        "observed_g": 72.41199999999999,
+        "predicted_g": 77.03528741094465,
+        "outside_training_range": [
+          "initial_weight_g"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-5_R1",
+        "held_out_group": "SGLE-5",
+        "observed_g": 52.24,
+        "predicted_g": 53.171165250109304,
+        "outside_training_range": [
+          "initial_weight_g",
+          "do_mean_mg_l"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-5_R2",
+        "held_out_group": "SGLE-5",
+        "observed_g": 62.268,
+        "predicted_g": 57.53144748857011,
+        "outside_training_range": [
+          "do_mean_mg_l"
+        ]
+      },
+      {
+        "study_id": "zenodo11174309",
+        "cohort_id": "SGLE-5_R3",
+        "held_out_group": "SGLE-5",
+        "observed_g": 70.036,
+        "predicted_g": 70.32243209103792,
+        "outside_training_range": [
+          "do_mean_mg_l"
+        ]
+      }
+    ],
+    "production_ready": false
+  },
+  "protocol": {
+    "group": "dietary treatment, 7 groups, 3 tanks each",
+    "selection": "two predeclared pilots; no hyperparameter search",
+    "label": "tank mean at day 60; not individual matched growth",
+    "environment": "weekly mean summaries, not daily or hourly forecasts",
+    "unresolved": "one external study; no independent farm or study holdout",
+    "not_used": [
+      "local new/corrected biometrics",
+      "Piura environmental covariates (absent)",
+      "Opiyo quarantined interval duration",
+      "interpolated weight labels"
+    ],
+    "production_ready": false
+  }
+}
