@@ -42,6 +42,7 @@ result={'recorded_at':now.isoformat(),'pond_id':1,'source_schema':schema,
  'growth_forecasts':[call('http://127.0.0.1:8013/api/v1/ponds/1/models/tilapia-growth-adaptive/forecast?projection_days='+str(d),private=True) for d in [7,14,28]],
  'trained_sensor_bundle':call('http://127.0.0.1:8013/api/v1/models/tilapia-sensor-forecast/status',private=True),
  'trained_stack_candidate':call('http://127.0.0.1:8013/api/v1/models/tilapia-sensor-forecast/stack-status',private=True),
+ 'direct_sensor_growth':call('http://127.0.0.1:8013/api/v1/models/tilapia-growth-direct/status',private=True),
  'oxygen_existing_model':call('http://127.0.0.1:8000/api/v1/ponds/1/models/svm-od/forecast',method='POST'),
  'sensor_fusion':{'status':'blocked','eligible_forecasts':{},'reasons':[
  'measurement_and_receipt_clock_alignment_unverified',
