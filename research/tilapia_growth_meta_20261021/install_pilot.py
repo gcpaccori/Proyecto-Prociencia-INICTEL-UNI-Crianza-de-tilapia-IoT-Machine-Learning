@@ -12,6 +12,8 @@ FILES = {
     'adaptive_model.py': '/app/backend/app/models_engine/ml/adaptive_tilapia_growth.py',
     'adaptive_api.py': '/app/backend/app/api/v1/tilapia_growth_adaptive.py',
     'shared_model.py': '/app/backend/app/models_engine/ml/supervised_tilapia_growth.py',
+    'sensor_model.py': '/app/backend/app/models_engine/ml/tilapia_sensor_forecast.py',
+    'sensor_api.py': '/app/backend/app/api/v1/tilapia_sensor_forecast.py',
 }
 
 
@@ -47,6 +49,10 @@ if not key.exists():
     key.write_text(secrets.token_urlsafe(48)); key.chmod(0o600)
 run(['docker', 'cp', str(key), CONTAINER+':'+DEST+'/api.key'])
 run(['docker', 'exec', CONTAINER, 'chmod', '600', DEST+'/api.key'])
+if (BASE/'sensor_bundle.json').exists():
+    run(['docker','cp',str(BASE/'sensor_bundle.json'),CONTAINER+':'+DEST+'/sensor_bundle.json'])
+if (BASE/'stacked_candidate.json').exists():
+    run(['docker','cp',str(BASE/'stacked_candidate.json'),CONTAINER+':'+DEST+'/stacked_candidate.json'])
 # Use the serving host clock for operational availability, not the analysis host.
 code = '''from pathlib import Path
 import json

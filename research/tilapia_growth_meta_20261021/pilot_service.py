@@ -6,8 +6,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import secrets
 from backend.app.api.v1.tilapia_growth_adaptive import router
+from backend.app.api.v1.tilapia_sensor_forecast import router as sensor_router
 
 os.environ.setdefault("TILAPIA_GROWTH_ADAPTIVE_ARTIFACT", str(Path(__file__).parent/'serving_model.json'))
+os.environ.setdefault('TILAPIA_SENSOR_BUNDLE', str(Path(__file__).parent/'sensor_bundle.json'))
+os.environ.setdefault('TILAPIA_STACKED_CANDIDATE', str(Path(__file__).parent/'stacked_candidate.json'))
 app = FastAPI(title="Tilapia adaptive growth ML - experimental", version="0.3.0")
 
 @app.middleware('http')
@@ -22,6 +25,7 @@ async def private_access(request, call_next):
     return await call_next(request)
 
 app.include_router(router, prefix="/api/v1")
+app.include_router(sensor_router, prefix='/api/v1')
 
 if __name__ == '__main__':
     import uvicorn
