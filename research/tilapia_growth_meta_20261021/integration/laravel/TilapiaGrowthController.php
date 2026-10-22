@@ -33,7 +33,18 @@ class TilapiaGrowthController extends Controller
                 }
                 $forecasts[] = $r->json();
             }
-            return response()->json(['forecasts' => $forecasts])->header('Cache-Control', 'no-store');
+            $intervalContext = null;
+            try {
+                $comparison = Http::acceptJson()->withToken($key)->connectTimeout(3)->timeout(5)
+                    ->get("{$base}/models/tilapia-growth-interval-context/status");
+                if ($comparison->successful() && (int) $comparison->json('pond_id') === $pond) {
+                    $intervalContext = $comparison->json();
+                }
+            } catch (\Throwable $e) {
+                // A diagnostic comparison must not prevent the existing projection.
+            }
+            return response()->json(['forecasts' => $forecasts, 'interval_context' => $intervalContext])
+                ->header('Cache-Control', 'no-store');
         } catch (\Throwable $e) {
             return response()->json(['message' => 'El servicio de crecimiento ML no está disponible. Intenta nuevamente.'], 503);
         }
