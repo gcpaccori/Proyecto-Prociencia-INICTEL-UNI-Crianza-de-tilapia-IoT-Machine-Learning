@@ -16,6 +16,8 @@ FILES = {
     'sensor_api.py': '/app/backend/app/api/v1/tilapia_sensor_forecast.py',
     'direct_model.py': '/app/backend/app/models_engine/ml/direct_sensor_growth.py',
     'direct_api.py': '/app/backend/app/api/v1/direct_sensor_growth.py',
+    'gaussian_model.py': '/app/backend/app/models_engine/ml/gaussian_tilapia_growth.py',
+    'gaussian_api.py': '/app/backend/app/api/v1/gaussian_tilapia_growth.py',
 }
 
 
@@ -57,6 +59,8 @@ if (BASE/'stacked_candidate.json').exists():
     run(['docker','cp',str(BASE/'stacked_candidate.json'),CONTAINER+':'+DEST+'/stacked_candidate.json'])
 if (BASE/'direct_bundle.json').exists():
     run(['docker','cp',str(BASE/'direct_bundle.json'),CONTAINER+':'+DEST+'/direct_bundle.json'])
+for name in ['gaussian_bundle.json','gaussian_curve.json']:
+    if (BASE/name).exists():run(['docker','cp',str(BASE/name),CONTAINER+':'+DEST+'/'+name])
 # Use the serving host clock for operational availability, not the analysis host.
 code = '''from pathlib import Path
 import json
