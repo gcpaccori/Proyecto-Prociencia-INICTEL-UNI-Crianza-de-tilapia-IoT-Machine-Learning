@@ -18,6 +18,7 @@
 <section class="card"><h2>Peso observado y proyección</h2><div class="legend"><span class="observed">● Peso observado</span><span class="projected">┄ Proyección ML</span></div><svg id="chart" viewBox="0 0 960 360" role="img" aria-label="Peso medio observado y proyecciones de peso medio en gramos"></svg><p class="muted">La línea discontinua representa una proyección, no un peso medido. No se dispone de un intervalo de predicción calibrado.</p><div class="scroll"><table><thead><tr><th>Horizonte desde hoy</th><th>Fecha objetivo (Lima)</th><th>Peso proyectado</th><th>Desde última biometría</th></tr></thead><tbody id="forecasts"></tbody></table></div></section>
 <section class="card"><h2>Biometrías usadas por el modelo</h2><div class="scroll"><table><thead><tr><th>Fecha de muestreo</th><th>Peso medio</th><th>Peces muestreados</th></tr></thead><tbody id="bios"></tbody></table></div><p class="muted">Las muestras pertenecen al mismo lote. La base registra el día de muestreo, sin hora; el cálculo toma el inicio de ese día en Lima.</p></section>
 <section class="card"><h2>Sensores y luz</h2><p id="sensors"></p><p id="light"></p><p class="muted">Las fechas de medición y de recepción requieren verificar los relojes. El contador de oscuridad no permite reconstruir un fotoperiodo fiable. El registro horario conserva los pronósticos o el motivo de bloqueo para evaluarlos frente a futuras biometrías.</p></section>
+<section class="card hidden" id="interval-context"><h2>Sensores y alimento: prueba por intervalos</h2><p id="interval-result"></p><div class="scroll"><table><thead><tr><th>Entradas del modelo</th><th>Error medio absoluto</th></tr></thead><tbody id="interval-metrics"></tbody></table></div><p id="interval-scope" class="muted"></p><p class="muted">Cada versión usa un único proceso gaussiano y pesos medidos. El alimento corresponde a totales ingresados, cuya entrega real está pendiente de verificar. Esta prueba retrospectiva no activa un nuevo predictor ni demuestra precisión en futuras biometrías. La luz no se incluyó por falta de cobertura comparable.</p></section>
 <section class="card"><h2>Alcance de la evidencia</h2><p>En cuatro fechas locales ya conocidas, el error absoluto medio retrospectivo fue <strong>12,76 g</strong>, frente a <strong>17,10 g</strong> con tendencia reciente. Este resultado es de desarrollo: no demuestra el error que tendrá una nueva campaña.</p><p class="muted">A 28 días desde hoy, el tiempo total desde la última biometría puede superar los 28 días estudiados en las referencias externas. No se ofrece una certeza cercana a 1 ni una garantía de crecimiento.</p><p id="trace" class="muted"></p></section>
 </div>
 <script>
@@ -53,6 +54,20 @@ async function load(e){
   $('sensors').textContent=first.sensor_features_used.length?'Variables de sensores usadas: '+first.sensor_features_used.join(', '):'Variables de sensores usadas para predecir el peso: ninguna. El efecto de temperatura, oxígeno, pH y luz todavía no está aprendido.';
   const li=ctx.light_inventory;$('light').textContent=`Luz: ${n(li.n,0)} registros; rango ${n(li.minimum_lux,0)}–${n(li.maximum_lux,0)} lux. Última fecha registrada: ${li.last_record||'sin datos'} (zona de esa columna pendiente de verificar).`;
   $('trace').textContent=`Emitido: ${new Date(first.issued_at).toLocaleString('es-PE',{timeZone:'America/Lima'})} (Lima). Modelo: ${first.model_version}. Huella: ${first.artifact_sha256}.`;
+  $('interval-context').classList.add('hidden');
+  const ic=data.interval_context;
+  if(ic&&ic.development_metrics){
+   const m=ic.development_metrics,v=m.variants;
+   table('interval-metrics',[
+    ['Peso inicial y tiempo',n(v.weight_time.MAE_g)+' g'],
+    ['Peso inicial, tiempo y agua',n(v.weight_time_water.MAE_g)+' g'],
+    ['Peso inicial, tiempo y alimento ingresado',n(v.weight_time_feed.MAE_g)+' g'],
+    ['Peso inicial, tiempo, alimento ingresado y agua',n(v.weight_time_feed_water.MAE_g)+' g'],
+    ['Referencia: conservar último peso medido',n(m.persistence_g.MAE_g)+' g']]);
+   $('interval-result').textContent=v.weight_time_feed_water.MAE_g<m.persistence_g.MAE_g?'El candidato reduce el error frente a conservar el último peso en estas fechas de desarrollo; falta validación independiente.':'El candidato con agua y alimento no mejora la referencia de conservar el último peso. Continúa como experimento.';
+   $('interval-scope').textContent=`Comparación sobre las mismas ${m.n_dates} fechas: ${m.dates.map(t=>t.slice(0,10)).join(', ')}. Intervalos excluidos por cobertura de agua: ${m.excluded_dates.map(t=>t.slice(0,10)).join(', ')||'ninguno'}. Menor error es mejor. Las fechas conservan el reloj registrado, pendiente de verificar.`;
+   $('interval-context').classList.remove('hidden');
+  }
   $('content').classList.remove('hidden');$('state').textContent='Proyección actualizada';
  }catch(err){$('error').textContent=err.message;$('state').textContent='Sin proyección disponible'}finally{$('refresh').disabled=false}
 }
