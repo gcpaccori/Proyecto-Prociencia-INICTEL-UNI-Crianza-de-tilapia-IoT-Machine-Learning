@@ -1,0 +1,18 @@
+{
+  "runner": "SISMAPISCIS 2026-11-06 reproducible growth comparison",
+  "dataset_sha256": {
+    "cohort.json": "fa068e228c6131f84a0d86c8e2a883ecdeedb4a3db77892fe41814149311bbbb",
+    "reference_replay.json": "7616ff6de3a88b7deb0f2f5aa3d454f76ddfc6bbbd7e317cbc19acfc52f8c7bd",
+    "original_ml_core.py": "07210e0e7c2ef98bd0ee4692444eab54a7761f7e4ac9ceda72715fdead846fa8",
+    "run.py": "04a04b8427b7995e087a8d405c533928e229144dee944b3ac90b12d3f7dd05c7"
+  },
+  "outputs_sha256": {
+    "predictions.csv": "cc524f4c8d9b79ce8209ac7cc02ea32011c2e75e40b782453d2090dd7d323174",
+    "audit.json": "f4f8896ee4592a72c60d9528bc0ccf4386f8370da4a538a85f8b3b4aae8c76f7",
+    "chart.svg": "50c0213fb1001f2cee8e3a7547cfb351db4877ff316331b18f4d412c4fe3c85d",
+    "chart.png": "b06a656022529442657d6b1bc704749a510b0e69989b6aa5afe580702eb86be8"
+  },
+  "result_verified_against_historical_ml_replay": true,
+  "no_db_write": true,
+  "no_automatic_deployment": true
+}

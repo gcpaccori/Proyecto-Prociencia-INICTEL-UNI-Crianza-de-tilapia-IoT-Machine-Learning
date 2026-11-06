@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "source": "VMI vmi2770917, validated run 20261025T012550344753Z",
+  "time_axis": "receipt_available / created_at (America/Lima)",
+  "evaluation_kind": "retrospective end-of-interval (not issue-time forecast)",
+  "source_snapshot_sha256": "8f11d8643cd679c8d39aff2b7cee593bbc34c76ff7a79535e87a7a888c5d67ba",
+  "biometries": [
+    {
+      "id": 1,
+      "date": "2026-05-09",
+      "mean_g": 8.1875,
+      "n": 20,
+      "sd_g": 2.6267447835476396
+    },
+    {
+      "id": 2,
+      "date": "2026-06-24",
+      "mean_g": 63.2805,
+      "n": 20,
+      "sd_g": 16.866023296619307
+    },
+    {
+      "id": 3,
+      "date": "2026-07-11",
+      "mean_g": 81.0475,
+      "n": 20,
+      "sd_g": 19.922951291359794
+    },
+    {
+      "id": 4,
+      "date": "2026-08-07",
+      "mean_g": 84.505,
+      "n": 20,
+      "sd_g": 23.51026550701898
+    },
+    {
+      "id": 5,
+      "date": "2026-09-13",
+      "mean_g": 118.4,
+      "n": 20,
+      "sd_g": 42.084376398398796
+    },
+    {
+      "id": 6,
+      "date": "2026-09-26",
+      "mean_g": 126.75,
+      "n": 20,
+      "sd_g": 38.15463688451869
+    },
+    {
+      "id": 7,
+      "date": "2026-10-16",
+      "mean_g": 150.53,
+      "n": 100,
+      "sd_g": 40.44161647899776
+    }
+  ],
+  "intervals": [
+    {
+      "interval_index": 0,
+      "mode": "receipt_available",
+      "anchor": "2026-05-09",
+      "target": "2026-06-24",
+      "initial_id": 1,
+      "final_id": 2,
+      "initial_weight_g": 8.1875,
+      "actual_weight_g": 63.2805,
+      "observed_gain_g": 55.093,
+      "features": {
+        "temperature_mean": 28.6936550768527,
+        "temperature_sd": 1.0645088039340171,
+        "temperature_p10": 27.286666399999998,
+        "oxygen_mean": 4.072044833485819,
+        "oxygen_sd": 1.5118667361622589,
+        "oxygen_p10": 3.0,
+        "ph_mean": 7.123559986276304,
+        "ph_sd": 0.2049685575196275,
+        "ph_p10": 6.8175,
+        "light_mean": null,
+        "initial_weight_g": 8.1875,
+        "duration_days": 46.0
+      },
+      "quality": {
+        "coverage": {
+          "temperature": 0.990036231884058,
+          "oxygen": 0.990036231884058,
+          "ph": 0.990036231884058,
+          "light": 0.0
+        },
+        "last_gap_hours": {
+          "temperature": 0.0,
+          "oxygen": 0.0,
+          "ph": 0.0
+        },
+        "last_source_hour": {
+          "temperature": "2026-06-24T00:00:00",
+          "oxygen": "2026-06-24T00:00:00",
+          "ph": "2026-06-24T00:00:00"
+        },
+        "eligible": true,
+        "expected_hours": 1104
+      }
+    },
+    {
+      "interval_index": 1,
+      "mode": "receipt_available",
+      "anchor": "2026-06-24",
+      "target": "2026-07-11",
+      "initial_id": 2,
+      "final_id": 3,
+      "initial_weight_g": 63.2805,
+      "actual_weight_g": 81.0475,
+      "observed_gain_g": 17.766999999999996,
+      "features": {
+        "temperature_mean": 27.85189729765013,
+        "temperature_sd": 0.9505773052206065,
+        "temperature_p10": 26.633333,
+        "oxygen_mean": 3.0085132246913586,
+        "oxygen_sd": 1.8755586402397648,
+        "oxygen_p10": 1.2423334000000001,
+        "ph_mean": 6.329171454308094,
+        "ph_sd": 0.5206978838184333,
+        "ph_p10": 5.1930002,
+        "light_mean": null,
+        "initial_weight_g": 63.2805,
+        "duration_days": 17.0
+      },
+      "quality": {
+        "coverage": {
+          "temperature": 0.9387254901960784,
+          "oxygen": 0.9926470588235294,
+          "ph": 0.9387254901960784,
+          "light": 0.0
+        },
+        "last_gap_hours": {
+          "temperature": 0.0,
+          "oxygen": 0.0,
+          "ph": 0.0
+        },
+        "last_source_hour": {
+          "temperature": "2026-07-11T00:00:00",
+          "oxygen": "2026-07-11T00:00:00",
+          "ph": "2026-07-11T00:00:00"
+        },
+        "eligible": true,
+        "expected_hours": 408
+      }
+    },
+    {
+      "interval_index": 2,
+      "mode": "receipt_available",
+      "anchor": "2026-07-11",
+      "target": "2026-08-07",
+      "initial_id": 3,
+      "final_id": 4,
+      "initial_weight_g": 81.0475,
+      "actual_weight_g": 84.505,
+      "observed_gain_g": 3.457499999999996,
+      "features": {
+        "temperature_mean": 28.903420922720244,
+        "temperature_sd": 0.8967521312333326,
+        "temperature_p10": 27.733333,
+        "oxygen_mean": 2.141998989180834,
+        "oxygen_sd": 0.5105575257054924,
+        "oxygen_p10": 1.5376668000000002,
+        "ph_mean": 5.702897989180835,
+        "ph_sd": 0.39267088619699975,
+        "ph_p10": 5.0603334,
+        "light_mean": null,
+        "initial_weight_g": 81.0475,
+        "duration_days": 27.0
+      },
+      "quality": {
+        "coverage": {
+          "temperature": 0.9984567901234568,
+          "oxygen": 0.9984567901234568,
+          "ph": 0.9984567901234568,
+          "light": 0.0
+        },
+        "last_gap_hours": {
+          "temperature": 0.0,
+          "oxygen": 0.0,
+          "ph": 0.0
+        },
+        "last_source_hour": {
+          "temperature": "2026-08-07T00:00:00",
+          "oxygen": "2026-08-07T00:00:00",
+          "ph": "2026-08-07T00:00:00"
+        },
+        "eligible": true,
+        "expected_hours": 648
+      }
+    },
+    {
+      "interval_index": 3,
+      "mode": "receipt_available",
+      "anchor": "2026-08-07",
+      "target": "2026-09-13",
+      "initial_id": 4,
+      "final_id": 5,
+      "initial_weight_g": 84.505,
+      "actual_weight_g": 118.4,
+      "observed_gain_g": 33.89500000000001,
+      "features": {
+        "temperature_mean": 29.497422009019164,
+        "temperature_sd": 1.174836667504437,
+        "temperature_p10": 28.0,
+        "oxygen_mean": 5.123192043968433,
+        "oxygen_sd": 1.6489533846252946,
+        "oxygen_p10": 2.5316668000000004,
+        "ph_mean": 5.947320564825254,
+        "ph_sd": 0.6952475840681293,
+        "ph_p10": 5.0010002,
+        "light_mean": 223.8128489361702,
+        "initial_weight_g": 84.505,
+        "duration_days": 37.0
+      },
+      "quality": {
+        "coverage": {
+          "temperature": 0.9988738738738738,
+          "oxygen": 0.9988738738738738,
+          "ph": 0.9988738738738738,
+          "light": 0.15878378378378377
+        },
+        "last_gap_hours": {
+          "temperature": 0.0,
+          "oxygen": 0.0,
+          "ph": 0.0
+        },
+        "last_source_hour": {
+          "temperature": "2026-09-13T00:00:00",
+          "oxygen": "2026-09-13T00:00:00",
+          "ph": "2026-09-13T00:00:00"
+        },
+        "eligible": true,
+        "expected_hours": 888
+      }
+    },
+    {
+      "interval_index": 4,
+      "mode": "receipt_available",
+      "anchor": "2026-09-13",
+      "target": "2026-09-26",
+      "initial_id": 5,
+      "final_id": 6,
+      "initial_weight_g": 118.4,
+      "actual_weight_g": 126.75,
+      "observed_gain_g": 8.349999999999994,
+      "features": {
+        "temperature_mean": 29.646955137820513,
+        "temperature_sd": 1.2825435360108002,
+        "temperature_p10": 27.8683336,
+        "oxygen_mean": 4.906685897435898,
+        "oxygen_sd": 1.2547608623073345,
+        "oxygen_p10": 2.8559,
+        "ph_mean": 5.552084387820512,
+        "ph_sd": 0.8749136767938882,
+        "ph_p10": 4.918333,
+        "light_mean": 130.70220295857987,
+        "initial_weight_g": 118.4,
+        "duration_days": 13.0
+      },
+      "quality": {
+        "coverage": {
+          "temperature": 1.0,
+          "oxygen": 1.0,
+          "ph": 1.0,
+          "light": 0.5416666666666666
+        },
+        "last_gap_hours": {
+          "temperature": 0.0,
+          "oxygen": 0.0,
+          "ph": 0.0
+        },
+        "last_source_hour": {
+          "temperature": "2026-09-26T00:00:00",
+          "oxygen": "2026-09-26T00:00:00",
+          "ph": "2026-09-26T00:00:00"
+        },
+        "eligible": true,
+        "expected_hours": 312
+      }
+    },
+    {
+      "interval_index": 5,
+      "mode": "receipt_available",
+      "anchor": "2026-09-26",
+      "target": "2026-10-16",
+      "initial_id": 6,
+      "final_id": 7,
+      "initial_weight_g": 126.75,
+      "actual_weight_g": 150.53,
+      "observed_gain_g": 23.78,
+      "features": {
+        "temperature_mean": 31.022695953846153,
+        "temperature_sd": 0.9829307518087098,
+        "temperature_p10": 29.7566668,
+        "oxygen_mean": 6.616491951754385,
+        "oxygen_sd": 1.91953713601573,
+        "oxygen_p10": 4.2916665,
+        "ph_mean": 6.773220505494506,
+        "ph_sd": 0.20577209820123835,
+        "ph_p10": 6.5850002000000005,
+        "light_mean": 400.0,
+        "initial_weight_g": 126.75,
+        "duration_days": 20.0
+      },
+      "quality": {
+        "coverage": {
+          "temperature": 0.9479166666666666,
+          "oxygen": 0.95,
+          "ph": 0.9479166666666666,
+          "light": 0.0020833333333333333
+        },
+        "last_gap_hours": {
+          "temperature": 0.0,
+          "oxygen": 0.0,
+          "ph": 0.0
+        },
+        "last_source_hour": {
+          "temperature": "2026-10-16T00:00:00",
+          "oxygen": "2026-10-16T00:00:00",
+          "ph": "2026-10-16T00:00:00"
+        },
+        "eligible": true,
+        "expected_hours": 480
+      }
+    }
+  ]
+}

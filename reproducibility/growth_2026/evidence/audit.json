@@ -1,0 +1,191 @@
+{
+  "protocol": "one-step retrospective end-of-interval, training prefixes 2/3/4/5, sensors observed at end",
+  "source_clock": "receipt_available / created_at, America/Lima",
+  "biometric_sample_dates": [
+    "2026-05-09",
+    "2026-06-24",
+    "2026-07-11",
+    "2026-08-07",
+    "2026-09-13",
+    "2026-09-26",
+    "2026-10-16"
+  ],
+  "mathematical_formulas": {
+    "TGC": "W_next = (W_anchor^(1/3) + C_prefix * E_target) ^ 3",
+    "VBGF": "W_next = (A-(A-W_anchor^(1/3))*exp(-K_prefix * E_target/TREF))^3",
+    "E_target": "days * max(T_mean-15.5,0) * f_OD(oxygen_mean)",
+    "C_prefix": "(W_anchor^(1/3)-W_B1^(1/3))/SUM(E_previous)",
+    "K_prefix": "-log((A-W_anchor^(1/3))/(A-W_B1^(1/3)))/(SUM(E_previous)/TREF)",
+    "reference": "archived mechanical models 2026-09-30, re-fit chronological adaptation",
+    "oxygen_low_ratio": 0.7077136102668018,
+    "T0_C": 15.5,
+    "W_inf_g": 392.32,
+    "TREF_C": 13.245267797152454,
+    "sensor_aggregation_note": "hourly exposure approximated using eligible interval means, not raw daily T/OD"
+  },
+  "ml_calls": [
+    "original_ml_core.evaluate(rows,biometry_stats,'ridge_correlated',VARIANTS['water_means'])",
+    "original_ml_core.evaluate(rows,biometry_stats,'gaussian_correlated',VARIANTS['exposure'])"
+  ],
+  "metrics": {
+    "tgc": {
+      "MAE_g": 42.254987494363284,
+      "RMSE_g": 46.64946838913578,
+      "bias_g": 42.254987494363284,
+      "max_error_g": 64.70135034742134,
+      "n_dates": 4
+    },
+    "vbgf": {
+      "MAE_g": 17.4928293936093,
+      "RMSE_g": 21.264982966527732,
+      "bias_g": 17.4928293936093,
+      "max_error_g": 35.193519604054444,
+      "n_dates": 4
+    },
+    "ridge": {
+      "MAE_g": 8.514416272869841,
+      "RMSE_g": 11.284530524222799,
+      "bias_g": 4.062255523092954,
+      "max_error_g": 20.85509766835827,
+      "n_dates": 4
+    },
+    "gaussian": {
+      "MAE_g": 12.197983814209017,
+      "RMSE_g": 16.130288040459238,
+      "bias_g": 7.347242081323991,
+      "max_error_g": 29.636928069365155,
+      "n_dates": 4
+    }
+  },
+  "rows": [
+    {
+      "date": "2026-08-07",
+      "anchor": "2026-07-11",
+      "n_training_intervals": 2,
+      "training_last_target": "2026-07-11",
+      "weight_observed_g": 84.505,
+      "tgc_g": 143.25985249354395,
+      "vbgf_g": 119.69851960405444,
+      "ridge_g": 105.36009766835826,
+      "gaussian_g": 114.14192806936515,
+      "tgc_coefficient": 0.0035331344240356996,
+      "vbgf_k_per_day": 0.011585311463025877,
+      "target_interval_thermal_oxygen_exposure": 256.11615210088615,
+      "target_interval_oxygen_factor": 0.7077136102668018,
+      "sensor_coverage": {
+        "temperature": 0.9984567901234568,
+        "oxygen": 0.9984567901234568,
+        "ph": 0.9984567901234568,
+        "light": 0.0
+      },
+      "ridge_outside_training_features": [
+        "initial_weight_g",
+        "temperature_mean",
+        "oxygen_mean"
+      ],
+      "gaussian_outside_training_features": [
+        "initial_weight_g",
+        "temperature_mean"
+      ]
+    },
+    {
+      "date": "2026-09-13",
+      "anchor": "2026-08-07",
+      "n_training_intervals": 3,
+      "training_last_target": "2026-08-07",
+      "weight_observed_g": 118.4,
+      "tgc_g": 183.10135034742135,
+      "vbgf_g": 140.31134943422634,
+      "ridge_g": 122.69824592356733,
+      "gaussian_g": 109.94587359371835,
+      "tgc_coefficient": 0.0026059599545048303,
+      "vbgf_k_per_day": 0.008624496249952929,
+      "target_interval_thermal_oxygen_exposure": 495.08867104049125,
+      "target_interval_oxygen_factor": 0.955945665163515,
+      "sensor_coverage": {
+        "temperature": 0.9988738738738738,
+        "oxygen": 0.9988738738738738,
+        "ph": 0.9988738738738738,
+        "light": 0.15878378378378377
+      },
+      "ridge_outside_training_features": [
+        "initial_weight_g",
+        "temperature_mean",
+        "oxygen_mean"
+      ],
+      "gaussian_outside_training_features": [
+        "initial_weight_g",
+        "temperature_mean"
+      ]
+    },
+    {
+      "date": "2026-09-26",
+      "anchor": "2026-09-13",
+      "n_training_intervals": 4,
+      "training_last_target": "2026-09-13",
+      "weight_observed_g": 126.75,
+      "tgc_g": 145.77244215650472,
+      "vbgf_g": 135.0981912587,
+      "ridge_g": 125.1534503186751,
+      "gaussian_g": 136.20352372170086,
+      "tgc_coefficient": 0.00205953742291604,
+      "vbgf_k_per_day": 0.0074344950667898715,
+      "target_interval_thermal_oxygen_exposure": 171.15309283059256,
+      "target_interval_oxygen_factor": 0.9306329451934984,
+      "sensor_coverage": {
+        "temperature": 1.0,
+        "oxygen": 1.0,
+        "ph": 1.0,
+        "light": 0.5416666666666666
+      },
+      "ridge_outside_training_features": [
+        "initial_weight_g",
+        "duration_days",
+        "temperature_mean"
+      ],
+      "gaussian_outside_training_features": [
+        "initial_weight_g",
+        "duration_days",
+        "temperature_mean"
+      ]
+    },
+    {
+      "date": "2026-10-16",
+      "anchor": "2026-09-26",
+      "n_training_intervals": 5,
+      "training_last_target": "2026-09-26",
+      "weight_observed_g": 150.53,
+      "tgc_g": 177.07130497998313,
+      "vbgf_g": 155.0482572774564,
+      "ridge_g": 143.22222818177113,
+      "gaussian_g": 149.2826429405116,
+      "tgc_coefficient": 0.0019075326461854734,
+      "vbgf_k_per_day": 0.007030218987778092,
+      "target_interval_thermal_oxygen_exposure": 310.45391907692306,
+      "target_interval_oxygen_factor": 1.0,
+      "sensor_coverage": {
+        "temperature": 0.9479166666666666,
+        "oxygen": 0.95,
+        "ph": 0.9479166666666666,
+        "light": 0.0020833333333333333
+      },
+      "ridge_outside_training_features": [
+        "initial_weight_g",
+        "temperature_mean",
+        "oxygen_mean"
+      ],
+      "gaussian_outside_training_features": [
+        "initial_weight_g",
+        "temperature_mean",
+        "oxygen_p10"
+      ]
+    }
+  ],
+  "limitations": [
+    "one known campaign",
+    "development labels also used for method selection",
+    "conditional GP dispersion is not calibrated",
+    "not forecast from interval start",
+    "physical timing of sensor exposure not independently verified"
+  ]
+}

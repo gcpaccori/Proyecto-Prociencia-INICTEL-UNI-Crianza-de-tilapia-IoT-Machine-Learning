@@ -1,0 +1,61 @@
+{
+  "source": "historical frozen replay 2026-10-25; comparison control, NOT the source of model predictions",
+  "predictions": [
+    {
+      "date": "2026-08-07",
+      "family": "gaussian_correlated",
+      "variant": "exposure",
+      "predicted_weight_g": 114.14192806936515,
+      "n_training_intervals": 2
+    },
+    {
+      "date": "2026-09-13",
+      "family": "gaussian_correlated",
+      "variant": "exposure",
+      "predicted_weight_g": 109.94587359371835,
+      "n_training_intervals": 3
+    },
+    {
+      "date": "2026-09-26",
+      "family": "gaussian_correlated",
+      "variant": "exposure",
+      "predicted_weight_g": 136.20352372170086,
+      "n_training_intervals": 4
+    },
+    {
+      "date": "2026-10-16",
+      "family": "gaussian_correlated",
+      "variant": "exposure",
+      "predicted_weight_g": 149.2826429405116,
+      "n_training_intervals": 5
+    },
+    {
+      "date": "2026-08-07",
+      "family": "ridge_correlated",
+      "variant": "water_means",
+      "predicted_weight_g": 105.36009766835826,
+      "n_training_intervals": 2
+    },
+    {
+      "date": "2026-09-13",
+      "family": "ridge_correlated",
+      "variant": "water_means",
+      "predicted_weight_g": 122.69824592356733,
+      "n_training_intervals": 3
+    },
+    {
+      "date": "2026-09-26",
+      "family": "ridge_correlated",
+      "variant": "water_means",
+      "predicted_weight_g": 125.1534503186751,
+      "n_training_intervals": 4
+    },
+    {
+      "date": "2026-10-16",
+      "family": "ridge_correlated",
+      "variant": "water_means",
+      "predicted_weight_g": 143.22222818177113,
+      "n_training_intervals": 5
+    }
+  ]
+}

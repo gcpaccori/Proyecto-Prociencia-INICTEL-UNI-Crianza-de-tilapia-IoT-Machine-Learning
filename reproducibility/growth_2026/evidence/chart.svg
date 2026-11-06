@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="880" viewBox="0 0 1480 880">
+<rect width="100%" height="100%" fill="white"/>
+<text x="740" y="45" font-family="DejaVu Sans,Arial,sans-serif" font-size="33" text-anchor="middle" fill="#101826" font-weight="bold">SISMAPISCIS | Comparación de modelos de crecimiento</text>
+<text x="740" y="81" font-family="DejaVu Sans,Arial,sans-serif" font-size="19" text-anchor="middle" fill="#607086" font-weight="normal">Calibración con intervalos previos · evaluación cronológica retrospectiva</text>
+<line x1="115" y1="115" x2="151" y2="115" stroke="#1268ac" stroke-width="4"/>
+<circle cx="133" cy="115" r="6" fill="#1268ac"/>
+<text x="161" y="122" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="start" fill="#243143" font-weight="normal">Peso observado</text>
+<line x1="555" y1="115" x2="591" y2="115" stroke="#f07819" stroke-width="4"/>
+<circle cx="573" cy="115" r="6" fill="#f07819"/>
+<text x="601" y="122" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="start" fill="#243143" font-weight="normal">TGC generalizado · recalibrado</text>
+<line x1="995" y1="115" x2="1031" y2="115" stroke="#208a55" stroke-width="4"/>
+<circle cx="1013" cy="115" r="6" fill="#208a55"/>
+<text x="1041" y="122" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="start" fill="#243143" font-weight="normal">Von Bertalanffy · recalibrado</text>
+<line x1="115" y1="149" x2="151" y2="149" stroke="#c62a36" stroke-width="4"/>
+<circle cx="133" cy="149" r="6" fill="#c62a36"/>
+<text x="161" y="156" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="start" fill="#243143" font-weight="normal">Modelo SISMAPISCIS · Ridge</text>
+<line x1="555" y1="149" x2="591" y2="149" stroke="#8c52b9" stroke-width="4"/>
+<circle cx="573" cy="149" r="6" fill="#8c52b9"/>
+<text x="601" y="156" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="start" fill="#243143" font-weight="normal">Modelo probabilístico SISMAPISCIS · gaussiano</text>
+<rect x="110" y="200" width="552.0833333333334" height="565" fill="#f0f3f7"/>
+<line x1="662.0833333333334" y1="200" x2="662.0833333333334" y2="765" stroke="#97a5b6" stroke-dasharray="7,5" stroke-width="2"/>
+<line x1="110" x2="1435" y1="765.0" y2="765.0" stroke="#e2e7ed"/>
+<text x="96" y="771.0" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">0</text>
+<line x1="110" x2="1435" y1="696.0975609756098" y2="696.0975609756098" stroke="#e2e7ed"/>
+<text x="96" y="702.0975609756098" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">25</text>
+<line x1="110" x2="1435" y1="627.1951219512196" y2="627.1951219512196" stroke="#e2e7ed"/>
+<text x="96" y="633.1951219512196" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">50</text>
+<line x1="110" x2="1435" y1="558.2926829268292" y2="558.2926829268292" stroke="#e2e7ed"/>
+<text x="96" y="564.2926829268292" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">75</text>
+<line x1="110" x2="1435" y1="489.390243902439" y2="489.390243902439" stroke="#e2e7ed"/>
+<text x="96" y="495.390243902439" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">100</text>
+<line x1="110" x2="1435" y1="420.4878048780488" y2="420.4878048780488" stroke="#e2e7ed"/>
+<text x="96" y="426.4878048780488" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">125</text>
+<line x1="110" x2="1435" y1="351.5853658536586" y2="351.5853658536586" stroke="#e2e7ed"/>
+<text x="96" y="357.5853658536586" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">150</text>
+<line x1="110" x2="1435" y1="282.6829268292683" y2="282.6829268292683" stroke="#e2e7ed"/>
+<text x="96" y="288.6829268292683" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">175</text>
+<line x1="110" x2="1435" y1="213.78048780487805" y2="213.78048780487805" stroke="#e2e7ed"/>
+<text x="96" y="219.78048780487805" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="end" fill="#273549" font-weight="normal">200</text>
+<line x1="110.0" x2="110.0" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="110.0" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">09/05</text>
+<line x1="330.83333333333337" x2="330.83333333333337" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="330.83333333333337" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">24/06</text>
+<line x1="551.6666666666667" x2="551.6666666666667" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="551.6666666666667" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">11/07</text>
+<line x1="772.5" x2="772.5" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="772.5" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">07/08</text>
+<line x1="993.3333333333334" x2="993.3333333333334" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="993.3333333333334" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">13/09</text>
+<line x1="1214.1666666666667" x2="1214.1666666666667" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="1214.1666666666667" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">26/09</text>
+<line x1="1435.0" x2="1435.0" y1="200" y2="765" stroke="#edf0f4"/>
+<text x="1435.0" y="797" font-family="DejaVu Sans,Arial,sans-serif" font-size="18" text-anchor="middle" fill="#22303e" font-weight="normal">16/10</text>
+<text x="330.83333333333337" y="235" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="middle" fill="#566983" font-weight="bold">CALIBRACIÓN INICIAL · 3 BIOMETRÍAS</text>
+<text x="1070.625" y="235" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="middle" fill="#566983" font-weight="bold">EVALUACIÓN CRONOLÓGICA · 4 FECHAS</text>
+<polyline points="110.00,742.43 330.83,590.59 551.67,541.63 772.50,532.10 993.33,438.68 1214.17,415.66 1435.00,350.12" fill="none" stroke="#1268ac" stroke-width="4"/>
+<circle cx="110.00" cy="742.43" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<circle cx="330.83" cy="590.59" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<circle cx="551.67" cy="541.63" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<circle cx="772.50" cy="532.10" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<circle cx="993.33" cy="438.68" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<circle cx="1214.17" cy="415.66" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<circle cx="1435.00" cy="350.12" r="7" fill="#1268ac" stroke="white" stroke-width="1.6"/>
+<polyline points="551.67,541.63 772.50,370.16 993.33,260.35 1214.17,363.24 1435.00,276.97" fill="none" stroke="#f07819" stroke-width="4" stroke-dasharray="10,8"/>
+<circle cx="551.67" cy="541.63" r="7" fill="#f07819" stroke="white" stroke-width="1.6"/>
+<circle cx="772.50" cy="370.16" r="7" fill="#f07819" stroke="white" stroke-width="1.6"/>
+<circle cx="993.33" cy="260.35" r="7" fill="#f07819" stroke="white" stroke-width="1.6"/>
+<circle cx="1214.17" cy="363.24" r="7" fill="#f07819" stroke="white" stroke-width="1.6"/>
+<circle cx="1435.00" cy="276.97" r="7" fill="#f07819" stroke="white" stroke-width="1.6"/>
+<polyline points="551.67,541.63 772.50,435.10 993.33,378.29 1214.17,392.66 1435.00,337.67" fill="none" stroke="#208a55" stroke-width="4" stroke-dasharray="10,8"/>
+<circle cx="551.67" cy="541.63" r="7" fill="#208a55" stroke="white" stroke-width="1.6"/>
+<circle cx="772.50" cy="435.10" r="7" fill="#208a55" stroke="white" stroke-width="1.6"/>
+<circle cx="993.33" cy="378.29" r="7" fill="#208a55" stroke="white" stroke-width="1.6"/>
+<circle cx="1214.17" cy="392.66" r="7" fill="#208a55" stroke="white" stroke-width="1.6"/>
+<circle cx="1435.00" cy="337.67" r="7" fill="#208a55" stroke="white" stroke-width="1.6"/>
+<polyline points="772.50,474.62 993.33,426.83 1214.17,420.06 1435.00,370.27" fill="none" stroke="#c62a36" stroke-width="4" stroke-dasharray="2,8"/>
+<circle cx="772.50" cy="474.62" r="7" fill="#c62a36" stroke="white" stroke-width="1.6"/>
+<circle cx="993.33" cy="426.83" r="7" fill="#c62a36" stroke="white" stroke-width="1.6"/>
+<circle cx="1214.17" cy="420.06" r="7" fill="#c62a36" stroke="white" stroke-width="1.6"/>
+<circle cx="1435.00" cy="370.27" r="7" fill="#c62a36" stroke="white" stroke-width="1.6"/>
+<polyline points="772.50,450.41 993.33,461.98 1214.17,389.61 1435.00,353.56" fill="none" stroke="#8c52b9" stroke-width="4" stroke-dasharray="2,8"/>
+<circle cx="772.50" cy="450.41" r="7" fill="#8c52b9" stroke="white" stroke-width="1.6"/>
+<circle cx="993.33" cy="461.98" r="7" fill="#8c52b9" stroke="white" stroke-width="1.6"/>
+<circle cx="1214.17" cy="389.61" r="7" fill="#8c52b9" stroke="white" stroke-width="1.6"/>
+<circle cx="1435.00" cy="353.56" r="7" fill="#8c52b9" stroke="white" stroke-width="1.6"/>
+<text x="740" y="821" font-family="DejaVu Sans,Arial,sans-serif" font-size="19" text-anchor="middle" fill="#283447" font-weight="normal">Fecha de biometría / evaluación (2026)</text>
+<text x="26" y="482.5" font-family="DejaVu Sans,Arial,sans-serif" font-size="19" text-anchor="middle" fill="#283447" font-weight="normal">Peso promedio (g)</text>
+<text x="740" y="854" font-family="DejaVu Sans,Arial,sans-serif" font-size="17" text-anchor="middle" fill="#101826" font-weight="bold">MAE (g):  TGC 42.25   |   VBGF 17.49   |   Ridge 8.51   |   Gaussiano 12.20</text>
+</svg>
