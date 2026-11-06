@@ -1,0 +1,13 @@
+test_all_reference_intervals_have_eligible_data (test_runner.TestReproduction) ... ok
+test_last_observed_and_models (test_runner.TestReproduction) ... ok
+test_mechanistic_values_and_metrics (test_runner.TestReproduction) ... ok
+test_model_comparison_cannot_mix_date_axes (test_runner.TestReproduction) ... ok
+test_no_missing_or_extra_evaluation_dates (test_runner.TestReproduction) ... ok
+test_no_observed_label_leak_into_mechanistic_coefficient (test_runner.TestReproduction) ... ok
+test_original_ml_model_invocations_replay (test_runner.TestReproduction) ... ok
+test_training_prefixes_are_past_only (test_runner.TestReproduction) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.072s
+
+OK

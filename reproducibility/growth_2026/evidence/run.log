@@ -1,0 +1,1 @@
+{"status": "PASS", "dates": ["2026-08-07", "2026-09-13", "2026-09-26", "2026-10-16"], "MAE_g": {"tgc": 42.255, "vbgf": 17.493, "ridge": 8.514, "gaussian": 12.198}, "last_date": {"tgc": 177.071, "vbgf": 155.048, "ridge": 143.222, "gaussian": 149.283}, "png": true, "out": "/tmp/sismapiscis_repro_growth_20261106/evidence"}

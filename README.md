@@ -28,3 +28,8 @@ Este paquete convierte los informes DOCX a Markdown y agrega archivos de context
 ```
 
 Cambia el contenido de `LICENSE` para poner tu nombre/organización donde aparece `<Nombre del autor>`.
+
+
+## Reproducir la evaluación de modelos de crecimiento (2026)
+
+La reproducción auditada de los modelos TGC, von Bertalanffy, SISMAPISCIS Ridge y SISMAPISCIS gaussiano —con código Python, datos agregados, pruebas 8/8, métricas y capturas PNG/SVG— está documentada en [reproducibility/growth_2026/README.md](reproducibility/growth_2026/README.md). No requiere credenciales ni acceso a la base de datos productiva.
